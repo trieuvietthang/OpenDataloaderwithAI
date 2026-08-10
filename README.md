@@ -49,4 +49,9 @@
 - **Xử lý đa luồng**: Ứng dụng mô hình `QThread` (`ConversionWorker`) để xử lý các tác vụ nặng (OCR, gọi API) dưới nền, đảm bảo giao diện phần mềm luôn mượt mà.
 
 ---
+
+### Acknowledgments / Ghi nhận
+This project is a modified/derivative work based on the original [OpenDataLoader PDF](https://github.com/opendataloader-project/opendataloader-pdf) developed by Hancom, Inc., licensed under the Apache License 2.0.
+
+---
 *Built with ❤️ for better document management.*

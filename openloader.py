@@ -1,3 +1,8 @@
+# -------------------------------------------------------------------------
+# This file contains modified code based on the original OpenDataLoader PDF 
+# by Hancom, Inc. (Licensed under Apache 2.0).
+# Modifications by trieuvietthang (2026).
+# -------------------------------------------------------------------------
 import sys
 import os
 import subprocess
