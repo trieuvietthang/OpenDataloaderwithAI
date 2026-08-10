@@ -1,0 +1,16 @@
+{
+  "formats": {
+    "markdown": true,
+    "json": false,
+    "html": false,
+    "text": false
+  },
+  "ocr_mode": 0,
+  "output_dir": "",
+  "page_range": "1-6",
+  "dark_mode": false,
+  "window_size": {
+    "width": 1280,
+    "height": 657
+  }
+}
