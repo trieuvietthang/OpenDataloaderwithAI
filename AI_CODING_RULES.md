@@ -13,6 +13,11 @@ Mỗi khi bắt đầu một phiên nói chuyện mới, AI **PHẢI** tự đ�
 - **Thread Safety**: KHÔNG BAO GIỜ được gọi các tác vụ chặn (blocking tasks) như I/O, OCR, hoặc network request trên Main Thread (GUI Thread). Mọi tác vụ xử lý phải đẩy vào `ConversionWorker`.
 - **Lập trình an toàn (Defensive Programming)**: Khi giao tiếp với các APIs bên ngoài (như Gemini AI) hoặc gọi subprocess (như Tesseract), luôn phải có cơ chế `try...except`, in log lỗi rõ ràng tiếng Anh (để tránh lỗi mã hóa Unicode trên Windows) và có cơ chế Retry (với lỗi 5xx, 429).
 - **Nguyên tắc "Do No Harm"**: Giữ nguyên các chức năng đang hoạt động tốt. Khi sửa một lỗi cục bộ, không làm phá vỡ kiến trúc tổng thể.
+- **Xử lý PDF & Bộ nhớ (Memory Management)**:
+  - Bất kỳ khi nào thao tác chuyển đổi định dạng PDF thành Ảnh (Rasterize) với `PyMuPDF (fitz)` bằng `get_pixmap(dpi=300)`, PHẢI luân phiên quản lý kích thước không gian. 
+  - LUÔN LUÔN thu nhỏ dung lượng ảnh sau khi xử lý (vd: dùng `img.convert("1")` cho trắng đen) trước khi lưu lại hoặc nhúng lại vào PDF, nhằm ngăn chặn hiện tượng tràn RAM bộ nhớ OCR và "bơm phồng" (Dimension Explosion) file PDF.
+  - Khi cần lưu file PDF bằng cách `insert_image()`, luôn giữ nguyên kích thước vật lý gốc của trang bằng `page.rect` thay vì nhét bừa một bức ảnh khổng lồ 300DPI vào PDF.
+  - Trạng thái Checkbox UI phải được đồng bộ chính xác với logic Worker để ngăn vòng lặp vĩnh cửu (infinite loops) hoặc lặp lại công đoạn không cần thiết.
 
 ## 3. Quy tắc Kiểm thử (Testing Workflow)
 - **Tự động kiểm thử**: TRƯỚC KHI đề nghị người dùng nghiệm thu, AI phải TỰ ĐỘNG chạy ứng dụng bằng công cụ `run_command` (hoặc viết script tự động test nếu cần thiết) để xác nhận lỗi đã được khắc phục.

@@ -45,6 +45,11 @@ except ImportError:
     fitz = None
 
 try:
+    import pikepdf
+except ImportError:
+    pikepdf = None
+
+try:
     import pytesseract
     from PIL import Image
 except ImportError:
@@ -721,7 +726,7 @@ class ConversionWorker(QThread):
     log = Signal(str, str)
     finished = Signal(bool, int)
 
-    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range=""):
+    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_contrast=True, dpi=300):
         super().__init__()
         self.input_paths = input_paths
         self.formats = formats
@@ -729,11 +734,55 @@ class ConversionWorker(QThread):
         self.ocr_mode = ocr_mode
         self.ai_profile = ai_profile
         self.page_range = page_range
+        self.pdf_password = pdf_password
+        self.remove_watermark = remove_watermark
+        self.use_pixel_filter = use_pixel_filter
+        self.use_morphology = use_morphology
+        self.use_contrast = use_contrast
+        self.dpi = dpi
         self._cancelled = False
 
     def cancel(self):
         """Request cancellation of the conversion process."""
         self._cancelled = True
+
+    def _apply_pixel_watermark_removal(self, img_path):
+        try:
+            import numpy as np
+            from PIL import Image, ImageFilter, ImageEnhance
+            img = Image.open(str(img_path)).convert("RGB")
+            
+            if self.use_contrast:
+                enhancer = ImageEnhance.Contrast(img)
+                img = enhancer.enhance(2.0)
+                
+            arr = np.array(img)
+            # Chuyển đổi sang Grayscale để lọc màu, giúp bảo toàn anti-aliasing của chữ đen
+            gray = np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140])
+            
+            # Những vùng tối hơn 160 sẽ được coi là Text và giữ lại (chữ thường < 100)
+            mask = gray < 160
+            
+            arr[mask] = [0, 0, 0]
+            arr[~mask] = [255, 255, 255]
+            
+            clean_img = Image.fromarray(arr)
+            
+            if self.use_morphology:
+                # Phục hồi nét đứt bằng cách nội suy giãn nở nét đen
+                # Dùng MinFilter(3) để giãn màu đen ra xung quanh, MaxFilter(3) để xói mòn trở lại (Closing)
+                clean_img = clean_img.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+                
+            # Convert to 1-bit monochrome to drastically reduce file size (from ~25MB to ~100KB per page)
+            clean_img = clean_img.convert("1")
+            clean_img.save(str(img_path), optimize=True)
+            return True
+        except ImportError:
+            self.log.emit("Lỗi: Thiếu thư viện 'numpy' hoặc 'Pillow'.", "error")
+            return False
+        except Exception as e:
+            self.log.emit(f"Lỗi khi xóa watermark bằng pixel: {e}", "warning")
+            return False
 
     def run(self):
         start_time = time.time()
@@ -784,11 +833,124 @@ class ConversionWorker(QThread):
             
             try:
                 if file_path.suffix.lower() == '.pdf':
-                    # Hybrid OCR routing decision
-                    if self.ocr_mode != "none":
-                        file_success = self.convert_pdf_with_ocr(file_path, current_out_dir)
-                    else:
-                        file_success = self.convert_pdf_standard(file_path, current_out_dir)
+                    processed_path = file_path
+                    is_temp_pdf = False
+                    
+                    # Unlock / Decrypt / Watermark process
+                    if "unlocked_pdf" in self.formats or self.pdf_password or self.remove_watermark:
+                        if pikepdf is None:
+                            self.log.emit("Lỗi: Thư viện 'pikepdf' chưa được cài đặt. Không thể mở khóa hoặc xóa Watermark.", "error")
+                            continue
+                        
+                        unlocked_path = Path(current_out_dir) / f"{file_path.stem}_unlocked.pdf"
+                        try:
+                            self.log.emit("-> Đang tiền xử lý PDF (Mở khóa / Xóa OCG Layer)...", "info")
+                            with pikepdf.open(str(file_path), password=self.pdf_password, allow_overwriting_input=True) as pdf:
+                                if self.remove_watermark:
+                                    self.log.emit("-> Đang quét và xóa Watermark (OCG Layer)...", "info")
+                                    if "/OCProperties" in pdf.Root:
+                                        del pdf.Root["/OCProperties"]
+                                    for page in pdf.pages:
+                                        if "/Contents" in page:
+                                            content_obj = page["/Contents"]
+                                            if isinstance(content_obj, pikepdf.Array):
+                                                new_contents = pikepdf.Array()
+                                                for obj in content_obj:
+                                                    stream = obj.read_bytes()
+                                                    stream = stream.replace(b"/OC", b"").replace(b"/BDC", b"").replace(b"/EMC", b"")
+                                                    new_obj = pdf.make_stream(stream)
+                                                    new_contents.append(new_obj)
+                                                page["/Contents"] = new_contents
+                                            elif isinstance(content_obj, pikepdf.Stream):
+                                                stream = content_obj.read_bytes()
+                                                stream = stream.replace(b"/OC", b"").replace(b"/BDC", b"").replace(b"/EMC", b"")
+                                                page["/Contents"] = pdf.make_stream(stream)
+                                        if "/Resources" in page:
+                                            resources = page["/Resources"]
+                                            if "/XObject" in resources:
+                                                xobjects = resources["/XObject"]
+                                                keys_to_remove = []
+                                                for key, obj in xobjects.items():
+                                                    if obj.get("/OC"):
+                                                        keys_to_remove.append(key)
+                                                for key in keys_to_remove:
+                                                    del xobjects[key]
+                                        if "/Annots" in page:
+                                            annotations = page["/Annots"]
+                                            page["/Annots"] = pikepdf.Array([annot for annot in annotations if "/OC" not in annot])
+
+                                pdf.save(str(unlocked_path))
+                            
+                            if self.remove_watermark and "unlocked_pdf" in self.formats:
+                                self.log.emit("-> Đang áp dụng Lọc màu điểm ảnh (Pixel Filtering) để xóa watermark...", "info")
+                                try:
+                                    import fitz
+                                    doc = fitz.open(str(unlocked_path))
+                                    new_pdf = fitz.open()
+                                    import tempfile
+                                    with tempfile.TemporaryDirectory() as tmpdir:
+                                        for page_num in range(len(doc)):
+                                            if self._cancelled: break
+                                            page = doc.load_page(page_num)
+                                            pix = page.get_pixmap(dpi=self.dpi)
+                                            img_path = Path(tmpdir) / f"page_{page_num}.png"
+                                            pix.save(str(img_path))
+                                            
+                                            if self.use_pixel_filter:
+                                                self._apply_pixel_watermark_removal(img_path)
+                                            
+                                            rect = page.rect
+                                            new_page = new_pdf.new_page(width=rect.width, height=rect.height)
+                                            new_page.insert_image(rect, filename=str(img_path))
+                                            
+                                    if not self._cancelled:
+                                        doc.close()
+                                        new_pdf.save(str(unlocked_path))
+                                        new_pdf.close()
+                                        self.log.emit("-> Đã tạo PDF sạch watermark (Dạng ảnh).", "success")
+                                except Exception as e:
+                                    self.log.emit(f"-> Lỗi khi Lọc màu nâng cao: {e}", "error")
+                            
+                            self.log.emit(f"-> Tiền xử lý thành công: {unlocked_path.name}", "success")
+                            
+                            if "unlocked_pdf" in self.formats:
+                                file_success = True
+                            
+                            # If there are other formats to convert, use this unlocked file
+                            if [f for f in self.formats if f != "unlocked_pdf"]:
+                                processed_path = unlocked_path
+                                # If they didn't specifically ask for unlocked_pdf, we should delete this temp file later
+                                is_temp_pdf = "unlocked_pdf" not in self.formats
+                        except Exception as e:
+                            self.log.emit(f"-> Lỗi mở khóa (Sai mật khẩu hoặc tệp bị hỏng): {str(e)}", "error")
+                            if "unlocked_pdf" in self.formats and not [f for f in self.formats if f != "unlocked_pdf"]:
+                                continue # only requested unlock and it failed
+
+                    # Conversion process for other formats
+                    other_formats = [f for f in self.formats if f != "unlocked_pdf"]
+                    if other_formats:
+                        # Temporary override formats so standard/ocr converters don't get confused
+                        original_formats = self.formats
+                        self.formats = other_formats
+                        
+                        try:
+                            # Hybrid OCR routing decision
+                            if self.ocr_mode != "none":
+                                conv_success = self.convert_pdf_with_ocr(processed_path, current_out_dir)
+                            else:
+                                if getattr(self, "remove_watermark", False):
+                                    self.log.emit("⚠️ Chú ý: Xóa Watermark chữ chéo yêu cầu chế độ OCR Ngoại tuyến. Chế độ Mặc định có thể vẫn còn watermark.", "warning")
+                                conv_success = self.convert_pdf_standard(processed_path, current_out_dir)
+                            file_success = file_success or conv_success
+                        finally:
+                            self.formats = original_formats
+                            
+                        # Cleanup temp file
+                        if is_temp_pdf and processed_path.exists():
+                            try:
+                                os.remove(processed_path)
+                            except: pass
+
                 elif file_path.suffix.lower() == '.docx':
                     file_success = self.convert_docx(file_path, current_out_dir)
                 
@@ -940,9 +1102,14 @@ class ConversionWorker(QThread):
                 page = doc.load_page(page_num)
                 self.log.emit(f"    Trang {page_num + 1}: Chạy nhận diện OCR ({self.ocr_mode.upper()})...", "info")
                 # Render page to high-quality image
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=self.dpi)
                 img_path = temp_img_dir / f"page_{page_num + 1}.png"
                 pix.save(str(img_path))
+                
+                # Apply advanced watermark removal to the image BEFORE OCR if requested
+                if getattr(self, "remove_watermark", False) and getattr(self, "use_pixel_filter", True):
+                    self._apply_pixel_watermark_removal(img_path)
+                
                 
                 ocr_text = ""
                 if self.ocr_mode == "tesseract":
@@ -1252,11 +1419,13 @@ class MainWindow(QMainWindow):
         self.cbJson = QCheckBox("JSON (.json)", self)
         self.cbHtml = QCheckBox("HTML (.html)", self)
         self.cbText = QCheckBox("Text (.txt)", self)
+        self.cbUnlockPdf = QCheckBox("Mở khóa PDF (.pdf)", self)
         
         format_layout.addWidget(self.cbMarkdown)
         format_layout.addWidget(self.cbJson)
         format_layout.addWidget(self.cbHtml)
         format_layout.addWidget(self.cbText)
+        format_layout.addWidget(self.cbUnlockPdf)
         format_layout.addStretch()
         config_layout.addLayout(format_layout, 0, 1)
 
@@ -1317,6 +1486,55 @@ class MainWindow(QMainWindow):
         self.pageRangeEdit.setPlaceholderText("VD: 1-5, 8, 11-13 (Để trống để xử lý tất cả)")
         config_layout.addWidget(self.pageRangeEdit, 4, 1)
 
+        # 6. PDF Password
+        config_layout.addWidget(QLabel("<b>Mật khẩu PDF:</b>", self), 5, 0)
+        self.pdfPasswordEdit = QLineEdit(self)
+        self.pdfPasswordEdit.setEchoMode(QLineEdit.Password)
+        self.pdfPasswordEdit.setPlaceholderText("Bỏ trống nếu chỉ gỡ giới hạn in ấn/copy")
+        config_layout.addWidget(self.pdfPasswordEdit, 5, 1)
+
+        # 7. Watermark Removal
+        config_layout.addWidget(QLabel("<b>Tiền Xử Lý:</b>", self), 6, 0)
+        
+        watermark_layout = QVBoxLayout()
+        watermark_layout.setSpacing(5)
+        
+        self.cbRemoveWatermark = QCheckBox("Xóa Watermark dạng OCG (Lớp ẩn)", self)
+        watermark_layout.addWidget(self.cbRemoveWatermark)
+        
+        # Advanced options frame
+        self.adv_watermark_frame = QFrame()
+        adv_layout = QHBoxLayout(self.adv_watermark_frame)
+        adv_layout.setContentsMargins(20, 0, 0, 0)
+        
+        self.cbPixelFilter = QCheckBox("Lọc Pixel (Ảnh xám)", self)
+        self.cbPixelFilter.setChecked(True)
+        self.cbMorphology = QCheckBox("Phục hồi nét đứt", self)
+        self.cbMorphology.setChecked(True)
+        self.cbContrast = QCheckBox("Tăng tương phản", self)
+        self.cbContrast.setChecked(True)
+        
+        dpi_layout = QHBoxLayout()
+        dpi_layout.addWidget(QLabel("DPI (OCR):"))
+        from PySide6.QtWidgets import QSpinBox
+        self.dpiSpin = QSpinBox(self)
+        self.dpiSpin.setRange(72, 600)
+        self.dpiSpin.setValue(300)
+        self.dpiSpin.setToolTip("Độ phân giải khi render PDF ra ảnh để OCR (chuẩn 300)")
+        dpi_layout.addWidget(self.dpiSpin)
+        
+        adv_layout.addWidget(self.cbPixelFilter)
+        adv_layout.addWidget(self.cbMorphology)
+        adv_layout.addWidget(self.cbContrast)
+        adv_layout.addLayout(dpi_layout)
+        adv_layout.addStretch()
+        
+        watermark_layout.addWidget(self.adv_watermark_frame)
+        
+        self.cbRemoveWatermark.toggled.connect(self.adv_watermark_frame.setVisible)
+        self.adv_watermark_frame.setVisible(False)
+        
+        config_layout.addLayout(watermark_layout, 6, 1)
 
         main_layout.addWidget(config_frame)
 
@@ -1342,6 +1560,10 @@ class MainWindow(QMainWindow):
         self.btnBrowseFolder.setObjectName("actionBtnSecondary")
         self.btnBrowseFolder.clicked.connect(self.browse_input_folder)
         
+        self.btnProcessPdf = QPushButton("⚙️ XỬ LÝ PDF", self)
+        self.btnProcessPdf.setObjectName("processBtn")
+        self.btnProcessPdf.clicked.connect(self.start_processing)
+        
         self.btnConvert = QPushButton("🚀 CHUYỂN ĐỔI", self)
         self.btnConvert.setObjectName("convertBtn")
         self.btnConvert.clicked.connect(self.start_conversion)
@@ -1354,7 +1576,8 @@ class MainWindow(QMainWindow):
         
         button_layout.addWidget(self.btnBrowseFile)
         button_layout.addWidget(self.btnBrowseFolder)
-        button_layout.addWidget(self.btnConvert, stretch=2)
+        button_layout.addWidget(self.btnProcessPdf, stretch=1)
+        button_layout.addWidget(self.btnConvert, stretch=1)
         button_layout.addWidget(self.btnCancel)
         main_layout.addLayout(button_layout)
 
@@ -1701,9 +1924,139 @@ class MainWindow(QMainWindow):
             self.dropZone.pathLabel.setText(", ".join([Path(p).name for p in paths]))
             self.write_log(f"Đã chọn {len(paths)} tài liệu/thư mục", "info")
 
+    def start_processing(self):
+        if not self.input_paths:
+            QMessageBox.warning(self, "Chưa chọn tài liệu", "Vui lòng chọn hoặc kéo thả tệp/thư mục cần xử lý trước.")
+            return
+
+        pdf_password = getattr(self, "pdfPasswordEdit", None) and self.pdfPasswordEdit.text() or ""
+        remove_watermark = getattr(self, "cbRemoveWatermark", None) and self.cbRemoveWatermark.isChecked() or False
+
+        if not (self.cbUnlockPdf.isChecked() or remove_watermark or pdf_password):
+            QMessageBox.warning(self, "Chưa chọn tính năng", "Vui lòng chọn 'Mở khóa PDF' hoặc 'Xóa Watermark' để thực hiện xử lý độc lập.")
+            return
+
+        global pikepdf
+        if pikepdf is None:
+            try:
+                import pikepdf
+            except ImportError:
+                pass
+
+        if pikepdf is None:
+            QMessageBox.critical(
+                self, 
+                "Thiếu Thư Viện", 
+                "Thư viện 'pikepdf' chưa được cài đặt.\n\n"
+                "Vui lòng mở cmd/terminal và gõ lệnh:\npip install pikepdf"
+            )
+            return
+
+        output_dir = getattr(self, "outDirEdit", None) and self.outDirEdit.text() or ""
+        if not output_dir:
+            output_dir = str(Path(self.input_paths[0]).parent)
+            
+        self.btnConvert.setEnabled(False)
+        self.btnProcessPdf.setEnabled(False)
+        self.btnBrowseFile.setEnabled(False)
+        self.btnBrowseFolder.setEnabled(False)
+        self.btnCancel.setEnabled(True)
+        self.progressBar.setValue(0)
+        self.logConsole.clear()
+        
+        self.write_log("Bắt đầu XỬ LÝ PDF độc lập...", "info")
+        
+        self.worker = ConversionWorker(
+            input_paths=self.input_paths,
+            formats=["unlocked_pdf"],
+            output_dir=output_dir,
+            ocr_mode="none",
+            ai_profile=None,
+            page_range="",
+            pdf_password=pdf_password,
+            remove_watermark=remove_watermark,
+            use_pixel_filter=getattr(self, "cbPixelFilter", None) and self.cbPixelFilter.isChecked() or False,
+            use_morphology=getattr(self, "cbMorphology", None) and self.cbMorphology.isChecked() or False,
+            use_contrast=getattr(self, "cbContrast", None) and self.cbContrast.isChecked() or False,
+            dpi=getattr(self, "dpiSpin", None) and self.dpiSpin.value() or 300
+        )
+        self.worker.progress.connect(self.update_progress)
+        self.worker.progress_detail.connect(self.update_progress_detail)
+        self.worker.log.connect(self.write_log)
+        self.worker.finished.connect(self.processing_finished)
+        self.worker.start()
+
+    @Slot(bool, int)
+    def processing_finished(self, success, count):
+        self.btnConvert.setEnabled(True)
+        self.btnProcessPdf.setEnabled(True)
+        self.btnBrowseFile.setEnabled(True)
+        self.btnBrowseFolder.setEnabled(True)
+        self.btnCancel.setEnabled(False)
+        
+        if success and count > 0:
+            reply = QMessageBox.question(
+                self, "Xử lý thành công",
+                f"Đã xử lý xong {count} tệp PDF.\n\n"
+                "Bạn có muốn tự động tiếp tục chuyển đổi các tệp này sang định dạng (Markdown/JSON) không?\n\n"
+                "- Chọn 'Yes' để Chuyển sang MD.\n"
+                "- Chọn 'No' để Chỉ lưu PDF mới.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                output_dir = getattr(self, "outDirEdit", None) and self.outDirEdit.text() or str(Path(self.input_paths[0]).parent)
+                new_paths = []
+                for p in self.input_paths:
+                    path = Path(p)
+                    if path.is_file() and path.suffix.lower() == '.pdf':
+                        new_p = Path(output_dir) / f"{path.stem}_unlocked.pdf"
+                        if new_p.exists():
+                            new_paths.append(str(new_p))
+                
+                if new_paths:
+                    self.handle_files_input(new_paths)
+                    
+                    if hasattr(self, "cbRemoveWatermark"):
+                        self.cbRemoveWatermark.setChecked(False)
+                    self.cbUnlockPdf.setChecked(False)
+                    self.pdfPasswordEdit.clear()
+                    
+                    if not (self.cbMarkdown.isChecked() or self.cbJson.isChecked() or self.cbHtml.isChecked() or self.cbText.isChecked()):
+                        self.cbMarkdown.setChecked(True)
+                        
+                    # Force OCR mode because the PDF is now a rasterized image
+                    if self.ocrCombo.currentIndex() == 0:
+                        self.ocrCombo.setCurrentIndex(1)
+                        
+                    self.start_conversion()
+                    return
+        
+        if success:
+            self.statusBar().showMessage(f"✅ Đã xử lý {count} tệp")
+
     def start_conversion(self):
         if not self.input_paths:
             QMessageBox.warning(self, "Chưa chọn tài liệu", "Vui lòng chọn hoặc kéo thả tệp/thư mục cần chuyển đổi trước.")
+            return
+
+        pdf_password = getattr(self, "pdfPasswordEdit", None) and self.pdfPasswordEdit.text() or ""
+        remove_watermark = getattr(self, "cbRemoveWatermark", None) and self.cbRemoveWatermark.isChecked() or False
+        
+        global pikepdf
+        if pikepdf is None:
+            try:
+                import pikepdf
+            except ImportError:
+                pass
+
+        if (self.cbUnlockPdf.isChecked() or remove_watermark or pdf_password) and pikepdf is None:
+            QMessageBox.critical(
+                self, 
+                "Thiếu Thư Viện", 
+                "Thư viện 'pikepdf' chưa được cài đặt, tính năng tiền xử lý bị vô hiệu hóa.\n\n"
+                "Vui lòng mở cmd/terminal và gõ lệnh:\npip install pikepdf"
+            )
             return
 
         formats = []
@@ -1715,6 +2068,8 @@ class MainWindow(QMainWindow):
             formats.append("html")
         if self.cbText.isChecked():
             formats.append("text")
+        if self.cbUnlockPdf.isChecked():
+            formats.append("unlocked_pdf")
 
         if not formats:
             QMessageBox.warning(self, "Chưa chọn định dạng", "Vui lòng chọn ít nhất một định dạng đầu ra.")
@@ -1792,6 +2147,7 @@ class MainWindow(QMainWindow):
 
         # Prepare GUI for processing
         self.btnConvert.setEnabled(False)
+        self.btnProcessPdf.setEnabled(False)
         self.btnBrowseFile.setEnabled(False)
         self.btnBrowseFolder.setEnabled(False)
         self.btnCancel.setEnabled(True)
@@ -1801,13 +2157,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("⏳ Đang chuyển đổi...")
 
         # Start Worker Thread
+        pdf_password = getattr(self, "pdfPasswordEdit", None) and self.pdfPasswordEdit.text() or ""
+        remove_watermark = getattr(self, "cbRemoveWatermark", None) and self.cbRemoveWatermark.isChecked() or False
         self.worker = ConversionWorker(
             input_paths=self.input_paths,
             formats=formats,
             output_dir=output_dir,
             ocr_mode=ocr_mode,
             ai_profile=active_profile,
-            page_range=getattr(self, "pageRangeEdit", None) and self.pageRangeEdit.text() or ""
+            page_range=getattr(self, "pageRangeEdit", None) and self.pageRangeEdit.text() or "",
+            pdf_password=pdf_password,
+            remove_watermark=remove_watermark,
+            use_pixel_filter=getattr(self, "cbPixelFilter", None) and self.cbPixelFilter.isChecked() or False,
+            use_morphology=getattr(self, "cbMorphology", None) and self.cbMorphology.isChecked() or False,
+            use_contrast=getattr(self, "cbContrast", None) and self.cbContrast.isChecked() or False,
+            dpi=getattr(self, "dpiSpin", None) and self.dpiSpin.value() or 300
         )
         self.worker.progress.connect(self.update_progress)
         self.worker.progress_detail.connect(self.update_progress_detail)
@@ -1854,6 +2218,7 @@ class MainWindow(QMainWindow):
                     self.write_log(f"Lỗi preview: {e}", "warning")
 
         self.btnConvert.setEnabled(True)
+        self.btnProcessPdf.setEnabled(True)
         self.btnBrowseFile.setEnabled(True)
         self.btnBrowseFolder.setEnabled(True)
         self.btnCancel.setEnabled(False)
