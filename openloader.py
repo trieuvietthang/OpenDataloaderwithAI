@@ -726,7 +726,7 @@ class ConversionWorker(QThread):
     log = Signal(str, str)
     finished = Signal(bool, int)
 
-    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_contrast=True, dpi=300):
+    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_deep_inpaint=False, use_contrast=True, dpi=300):
         super().__init__()
         self.input_paths = input_paths
         self.formats = formats
@@ -738,6 +738,7 @@ class ConversionWorker(QThread):
         self.remove_watermark = remove_watermark
         self.use_pixel_filter = use_pixel_filter
         self.use_morphology = use_morphology
+        self.use_deep_inpaint = use_deep_inpaint
         self.use_contrast = use_contrast
         self.dpi = dpi
         self._cancelled = False
@@ -746,43 +747,70 @@ class ConversionWorker(QThread):
         """Request cancellation of the conversion process."""
         self._cancelled = True
 
-    def _apply_pixel_watermark_removal(self, img_path):
+    def _is_scanned_page(self, page):
+        """
+        Phân loại trang PDF là Bản Scan hay Bản Mềm bằng cách đo diện tích ảnh che phủ.
+        """
+        page_area = page.rect.get_area()
+        if page_area == 0:
+            return False
+            
+        images = page.get_images(full=True)
+        img_area = 0
+        for img in images:
+            try:
+                # Lấy bounding box của ảnh trên trang
+                bbox = page.get_image_bbox(img)
+                img_area += bbox.get_area()
+            except Exception:
+                pass
+                
+        # Nếu tổng diện tích ảnh > 80% diện tích trang, coi là bản scan
+        return (img_area / page_area) > 0.8
+
+    def _apply_pixel_watermark_removal(self, img):
         try:
             import numpy as np
             from PIL import Image, ImageFilter, ImageEnhance
-            img = Image.open(str(img_path)).convert("RGB")
+            img = img.convert("RGB")
             
+            # KHÔI PHỤC TÍNH NĂNG TĂNG TƯƠNG PHẢN
+            # Tính năng này cực kỳ quan trọng để đẩy các điểm giao cắt (giữa nét chữ đen và W.mark màu/đỏ) về màu đen.
             if self.use_contrast:
                 enhancer = ImageEnhance.Contrast(img)
                 img = enhancer.enhance(2.0)
                 
             arr = np.array(img)
-            # Chuyển đổi sang Grayscale để lọc màu, giúp bảo toàn anti-aliasing của chữ đen
-            gray = np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140])
+            # Chuyển đổi sang Grayscale để lọc màu (0 = Đen, 255 = Trắng)
+            gray = np.dot(arr[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
             
-            # Những vùng tối hơn 160 sẽ được coi là Text và giữ lại (chữ thường < 100)
-            mask = gray < 160
-            
+            if self.use_deep_inpaint:
+                # OPTION 2: WATERMARK TO / ĐẬM / CÓ MÀU (Thuật toán cũ đã chứng minh hiệu quả)
+                # Dùng ngưỡng cao (160) kết hợp Contrast để bảo vệ nét chữ tại các điểm giao cắt, không để lại vệt trắng.
+                mask = gray < 160
+            else:
+                # OPTION 1: WATERMARK NHỎ / NHẠT / DÀN ĐỀU (Thuật toán lọc gắt)
+                # Dùng ngưỡng thấp (130) để cạo sạch các W.mark nhạt bị máy scan vô tình kéo cho đậm lên.
+                mask = gray < 130
+                
             arr[mask] = [0, 0, 0]
             arr[~mask] = [255, 255, 255]
             
             clean_img = Image.fromarray(arr)
             
             if self.use_morphology:
-                # Phục hồi nét đứt bằng cách nội suy giãn nở nét đen
-                # Dùng MinFilter(3) để giãn màu đen ra xung quanh, MaxFilter(3) để xói mòn trở lại (Closing)
+                # Phục hồi nét đứt cơ bản (Min 3 / Max 3) an toàn cho chữ
                 clean_img = clean_img.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
                 
-            # Convert to 1-bit monochrome to drastically reduce file size (from ~25MB to ~100KB per page)
+            # Convert to 1-bit monochrome to drastically reduce file size
             clean_img = clean_img.convert("1")
-            clean_img.save(str(img_path), optimize=True)
-            return True
+            return clean_img
         except ImportError:
             self.log.emit("Lỗi: Thiếu thư viện 'numpy' hoặc 'Pillow'.", "error")
-            return False
+            return img
         except Exception as e:
             self.log.emit(f"Lỗi khi xóa watermark bằng pixel: {e}", "warning")
-            return False
+            return img
 
     def run(self):
         start_time = time.time()
@@ -851,19 +879,47 @@ class ConversionWorker(QThread):
                                     if "/OCProperties" in pdf.Root:
                                         del pdf.Root["/OCProperties"]
                                     for page in pdf.pages:
-                                        if "/Contents" in page:
-                                            content_obj = page["/Contents"]
+                                        content_obj = page.get("/Contents")
+                                        if content_obj:
+                                            import re
+                                            # Hàm lọc mã nguồn mức Vector
+                                            def filter_vector_stream(stream):
+                                                # 1. Xóa toàn bộ nội dung trong lớp OCG
+                                                stream = re.sub(b'/OC\\s+/[^\\s]+\\s+BDC.*?EMC', b'', stream, flags=re.DOTALL)
+                                                # Dự phòng dọn dẹp nhãn
+                                                stream = stream.replace(b"/OC", b"").replace(b"/BDC", b"").replace(b"/EMC", b"")
+                                                
+                                                # 2. XÓA WATERMARK CHỮ CHÉO (DIAGONAL TEXT REMOVAL)
+                                                # Quét qua các khối văn bản (BT ... ET)
+                                                bt_blocks = re.split(b'(BT.*?ET)', stream, flags=re.DOTALL)
+                                                new_stream = b""
+                                                for block in bt_blocks:
+                                                    if block.startswith(b"BT") and block.endswith(b"ET"):
+                                                        # Truy tìm Ma Trận Phép Biến Hình Tm (Text Matrix)
+                                                        tm_match = re.search(b'([-\\d.]+)\\s+([-\\d.]+)\\s+([-\\d.]+)\\s+([-\\d.]+)\\s+[-\\d.]+\\s+[-\\d.]+\\s+Tm', block)
+                                                        if tm_match:
+                                                            try:
+                                                                b_val = float(tm_match.group(2))
+                                                                c_val = float(tm_match.group(3))
+                                                                # Nếu b và c khác 0 (có độ xoay chéo), 99% đây là Watermark => BỎ QUA KHỐI NÀY!
+                                                                if abs(b_val) > 0.01 or abs(c_val) > 0.01:
+                                                                    continue 
+                                                            except ValueError:
+                                                                pass
+                                                    new_stream += block
+                                                return new_stream
+
                                             if isinstance(content_obj, pikepdf.Array):
                                                 new_contents = pikepdf.Array()
                                                 for obj in content_obj:
                                                     stream = obj.read_bytes()
-                                                    stream = stream.replace(b"/OC", b"").replace(b"/BDC", b"").replace(b"/EMC", b"")
+                                                    stream = filter_vector_stream(stream)
                                                     new_obj = pdf.make_stream(stream)
                                                     new_contents.append(new_obj)
                                                 page["/Contents"] = new_contents
                                             elif isinstance(content_obj, pikepdf.Stream):
                                                 stream = content_obj.read_bytes()
-                                                stream = stream.replace(b"/OC", b"").replace(b"/BDC", b"").replace(b"/EMC", b"")
+                                                stream = filter_vector_stream(stream)
                                                 page["/Contents"] = pdf.make_stream(stream)
                                         if "/Resources" in page:
                                             resources = page["/Resources"]
@@ -886,27 +942,45 @@ class ConversionWorker(QThread):
                                 try:
                                     import fitz
                                     doc = fitz.open(str(unlocked_path))
-                                    new_pdf = fitz.open()
                                     import tempfile
+                                    import shutil
                                     with tempfile.TemporaryDirectory() as tmpdir:
                                         for page_num in range(len(doc)):
                                             if self._cancelled: break
                                             page = doc.load_page(page_num)
+                                            
+                                            # SMART ROUTING: Kiểm tra Bản Scan hay Bản Mềm
+                                            # Nếu người dùng CHỌN lọc Pixel, ta BẮT BUỘC phải Rasterize cả bản mềm để xóa watermark.
+                                            # Chỉ bỏ qua Rasterize nếu KHÔNG dùng Lọc Pixel và trang đó là Bản Mềm.
+                                            if not self.use_pixel_filter and not self._is_scanned_page(page):
+                                                self.log.emit(f"-> Trang {page_num + 1} là Bản Mềm. Bỏ qua Rasterize để bảo vệ định dạng Vector.", "info")
+                                                continue
+                                            
                                             pix = page.get_pixmap(dpi=self.dpi)
-                                            img_path = Path(tmpdir) / f"page_{page_num}.png"
-                                            pix.save(str(img_path))
+                                            
+                                            # Chuyển fitz pixmap sang PIL Image để xử lý
+                                            mode = "RGBA" if pix.alpha else "RGB"
+                                            from PIL import Image
+                                            img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
                                             
                                             if self.use_pixel_filter:
-                                                self._apply_pixel_watermark_removal(img_path)
+                                                img = self._apply_pixel_watermark_removal(img)
+                                                
+                                            # Đuôi .pdf để Pillow kích hoạt chuẩn nén CCITT Group 4 cho ảnh 1-bit
+                                            img_path = Path(tmpdir) / f"page_{page_num}.pdf"
+                                            img.save(str(img_path), resolution=self.dpi)
                                             
-                                            rect = page.rect
-                                            new_page = new_pdf.new_page(width=rect.width, height=rect.height)
-                                            new_page.insert_image(rect, filename=str(img_path))
+                                            # Thay thế trang cũ bằng trang ảnh siêu nét siêu nhẹ
+                                            temp_pdf = fitz.open(str(img_path))
+                                            doc.delete_page(page_num)
+                                            doc.insert_pdf(temp_pdf, start_at=page_num)
+                                            temp_pdf.close()
                                             
                                     if not self._cancelled:
+                                        temp_out = str(unlocked_path) + ".tmp"
+                                        doc.save(temp_out, deflate=True)
                                         doc.close()
-                                        new_pdf.save(str(unlocked_path))
-                                        new_pdf.close()
+                                        shutil.move(temp_out, str(unlocked_path))
                                         self.log.emit("-> Đã tạo PDF sạch watermark (Dạng ảnh).", "success")
                                 except Exception as e:
                                     self.log.emit(f"-> Lỗi khi Lọc màu nâng cao: {e}", "error")
@@ -1509,8 +1583,10 @@ class MainWindow(QMainWindow):
         
         self.cbPixelFilter = QCheckBox("Lọc Pixel (Ảnh xám)", self)
         self.cbPixelFilter.setChecked(True)
-        self.cbMorphology = QCheckBox("Phục hồi nét đứt", self)
+        self.cbMorphology = QCheckBox("Phục hồi nét (Cơ bản)", self)
         self.cbMorphology.setChecked(True)
+        self.cbDeepInpaint = QCheckBox("Giữ nét giao cắt (W.mark to)", self)
+        self.cbDeepInpaint.setChecked(False)
         self.cbContrast = QCheckBox("Tăng tương phản", self)
         self.cbContrast.setChecked(True)
         
@@ -1525,6 +1601,7 @@ class MainWindow(QMainWindow):
         
         adv_layout.addWidget(self.cbPixelFilter)
         adv_layout.addWidget(self.cbMorphology)
+        adv_layout.addWidget(self.cbDeepInpaint)
         adv_layout.addWidget(self.cbContrast)
         adv_layout.addLayout(dpi_layout)
         adv_layout.addStretch()

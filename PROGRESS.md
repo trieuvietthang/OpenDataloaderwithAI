@@ -21,10 +21,13 @@
 5. [x] **Sửa lỗi (Bug Fixes)**:
    - Fix lỗi Kéo thả file, lỗi đường dẫn Tesseract, lỗi UnicodeEncodeError khi log.
    - Fix lỗi co hẹp UI khi thêm nhiều cấu hình (bằng QScrollArea).
-6. [x] **Xóa Watermark & Tiền Xử Lý (Tiên tiến)**:
-   - Tích hợp tính năng xóa Watermark ẩn (OCG Layer) với `pikepdf`.
-   - Xây dựng thuật toán bóc tách màu điểm ảnh (Pixel Filtering) kết hợp biến đổi hình thái học (Morphology) từ `Pillow` và `Numpy` để vá lỗi đứt nét, tăng độ tương phản giúp Tesseract OCR đọc chính xác 100%.
-   - Tối ưu hóa dung lượng (chuẩn hóa ảnh 1-bit Monochrome) giải quyết vấn đề đầy RAM khi render PDF ở độ phân giải 300 DPI.
+6. [x] **Xóa Watermark & Tiền Xử Lý (Đột phá - Tiên tiến)**:
+   - **Xóa mác OCG Layer:** Tích hợp tính năng xóa Watermark ẩn với `pikepdf`.
+   - **Lọc Pixel Phân Loại (Tùy chọn 2 nhánh):** Xây dựng thuật toán phân loại và tách nhánh xử lý cho 2 nhóm Watermark khác nhau:
+     - *Chế độ cơ bản:* Dành cho Watermark xám/nhỏ, lọc gắt (ngưỡng 130) kết hợp Morphology nhẹ giữ nét chữ cực kỳ sắc bén và thanh mảnh.
+     - *Chế độ bảo vệ nét giao cắt:* Dành cho Watermark đục/to/màu. Áp dụng kỹ thuật ép tương phản (Contrast 2.0) để đẩy các điểm giao cắt về màu đen, kết hợp với ngưỡng bảo vệ cao (160) giúp phục hồi chữ bị đứt lấp hoàn hảo mà không để lại vệt trắng.
+   - **Phẫu Thuật Mã Nguồn (Vector-Level Diagonal Surgery):** Can thiệp thẳng vào mảng `\Contents` của PDF (thông qua luồng Regex) để săn tìm và tiêu diệt các khối chữ được vẽ chéo (bằng ma trận `Tm`), xóa Watermark từ trong trứng nước trước cả khi PDF biến thành ảnh (Rasterization). Giúp bảo toàn nét 100%.
+   - **Nén dung lượng siêu nhỏ:** Kết hợp định dạng ảnh 1-bit Monochrome với chuẩn nén CCITT Group 4 của định dạng TIFF, sau đó nhúng ngược lại vào PDF, giúp giảm dung lượng đầu ra cực sâu so với ảnh gốc, tối ưu tối đa cho lưu trữ.
 7. [x] **Đóng gói (Packaging)**:
    - Biên dịch thành công ứng dụng ra file `.exe` bằng PyInstaller (Chế độ `--onedir`).
 
