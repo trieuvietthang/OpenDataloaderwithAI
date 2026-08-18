@@ -1,6 +1,6 @@
 # TIẾN ĐỘ DỰ ÁN (PROJECT PROGRESS)
 
-## Giai đoạn hiện tại: [Hoàn thành Version 2.0 - Pro Features]
+## Giai đoạn hiện tại: [Hoàn thành Version 2.1 - Docling OCR & Tối ưu tiếng Việt]
 
 ### Các hạng mục đã hoàn thành (Done):
 1. [x] **Core OCR & Extraction**: Tích hợp thành công PyMuPDF (trích xuất text), Tesseract (OCR local), Gemini (OCR cloud).
@@ -15,7 +15,7 @@
    - Bổ sung nút **"Kiểm tra kết nối"** (Ping API) trực tiếp trong thẻ cấu hình.
 4. [x] **Tính năng Chuyên nghiệp (Pro Features - V2.0)**:
    - **Dark Mode**: Thêm nút chuyển đổi Giao diện Tối/Sáng trên Header, ghi nhớ trạng thái vào config.
-   - **Trình Xem Trước (Preview)**: Bổ sung QTabWidget chia 2 khung Nhật ký xử lý & Xem trước kết quả. Tự động render Markdown bằng thư viện `markdown` ngay trong ứng dụng sau khi chuyển đổi xong.
+   - ~~**Trình Xem Trước (Preview)**: Bổ sung QTabWidget chia 2 khung Nhật ký xử lý & Xem trước kết quả~~ *(Đã gỡ bỏ để tối ưu hóa hiệu suất và chống treo UI theo luật Simplicity First).*
    - **Tùy chỉnh Mệnh lệnh AI (Prompt Engineering)**: Cho phép người dùng chỉnh sửa hoặc viết Prompt tùy ý cho AI theo từng Profile.
    - **Lọc trang PDF (Page Range)**: Hỗ trợ cú pháp nhập trang (Vd: `1-5, 10`) để chỉ quét OCR các trang cụ thể, tiết kiệm chi phí API và thời gian.
 5. [x] **Sửa lỗi (Bug Fixes)**:
@@ -30,8 +30,23 @@
    - **Nén dung lượng siêu nhỏ:** Kết hợp định dạng ảnh 1-bit Monochrome với chuẩn nén CCITT Group 4 của định dạng TIFF, sau đó nhúng ngược lại vào PDF, giúp giảm dung lượng đầu ra cực sâu so với ảnh gốc, tối ưu tối đa cho lưu trữ.
 7. [x] **Đóng gói (Packaging)**:
    - Biên dịch thành công ứng dụng ra file `.exe` bằng PyInstaller (Chế độ `--onedir`).
+8. [x] **Tích hợp Docling OCR (Layout + TableFormer)**:
+   - **Bổ sung chế độ OCR thứ 4:** Docling sử dụng mô hình Layout Analysis + TableFormer để giữ nguyên cấu trúc bảng biểu — điểm yếu cố hữu của Tesseract thuần.
+   - **Fix lỗi kết quả rỗng (Root cause):** Docling mặc định `lang=['fra','deu','spa','eng']` — hoàn toàn không có tiếng Việt. Đã ép rõ `lang=["vie","eng"]` kèm `path` trỏ tới thư mục `tessdata` cục bộ.
+   - **Chuyển sang `TesseractCliOcrOptions`:** Thay cho `TesseractOcrOptions` (vốn đòi hỏi C-binding `tesserocr` phải biên dịch thủ công). Bản CLI gọi thẳng binary Tesseract nên chạy được ngay.
+   - **Fix crash `InvalidCxxCompiler`:** Docling chạy mô hình layout qua `torch.compile`, đòi hỏi trình biên dịch MSVC `cl` mà đa số máy Windows không có. Đã set `TORCHDYNAMO_DISABLE=1` **trước mọi import** để vô hiệu hóa.
+   - **Fix lỗi "Model not found":** Chỉ gán `artifacts_path` khi thư mục model thực sự có dữ liệu; nếu rỗng thì để Docling tự tải về (trước đây trỏ vào thư mục rỗng gây lỗi thay vì auto-download).
+   - **Fix nút "Cài đặt Docling" không tải model:** Bản cũ chỉ khởi tạo đối tượng `DocumentConverter` (không hề tải gì). Đã gọi đúng `download_models()`.
+   - **Tự động tải `vie.traineddata`** nếu thiếu, dùng chung logic với chế độ Tesseract.
+   - **Dọn rác đầu ra:** Xuất Markdown với `image_placeholder=""` và tự xóa thư mục `{stem}_images/` sau khi ghi file, tránh để lại thư mục ảnh thừa.
+9. [x] **Sửa lỗi phần mở rộng tệp đầu ra (`.markdown` → `.md`)**:
+   - Nguyên nhân: code ghép chuỗi `f"{base_name}.{fmt}"` với `fmt="markdown"`.
+   - Khắc phục: bổ sung hằng số `FORMAT_EXTENSIONS = {"markdown": "md", "text": "txt"}` và áp dụng cho cả 2 luồng xuất (PDF OCR và DOCX).
+10. [x] **Gỡ bỏ VietOCR (Quyết định kỹ thuật)**:
+    - Lý do: `vietocr==0.3.13` ghim cứng `pillow==10.2.0`; Python 3.13 không có wheel dựng sẵn nên pip buộc phải build từ source và thất bại (`KeyError: '__version__'`).
+    - Theo luật **Simplicity First**, đã gỡ bỏ toàn bộ tính năng thay vì cố vá một phụ thuộc đã lỗi thời, tránh làm mất ổn định các chế độ OCR đang chạy tốt.
 
 ### Hạng mục tiếp theo (To-do / Backlog):
-- [ ] Bổ sung kịch bản tự động hóa Unit Test (PyTest).
-- [ ] Cải thiện hiển thị thanh tiến độ xử lý trang song song (Multi-threading cho từng trang).
-- [ ] Đóng gói lại thành file `.exe` phiên bản V2 (Sau khi người dùng hoàn tất kiểm thử nội bộ).
+- [x] Bổ sung kịch bản tự động hóa Unit Test (PyTest) — hiện có `tests/` với 4 test PASS.
+- [x] **Cải thiện hiển thị thanh tiến độ xử lý trang song song (Multi-threading cho từng trang)**.
+- [x] Đóng gói lại thành file cài đặt `.exe` phiên bản V2 (OpenDataLoader_Setup_V2.1.exe).

@@ -9,3 +9,14 @@ dist/
 .venv
 venv/
 env/
+
+# Runtime user config: holds live API keys, created by the app on first run.
+config.json
+
+# OCR model caches downloaded at runtime
+docling_models/
+tessdata/
+
+# Local scratch files from manual testing
+Mau_PDF.*
+test_*.png
