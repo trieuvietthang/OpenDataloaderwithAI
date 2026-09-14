@@ -1,4 +1,4 @@
-# OpenDataLoader PDF (V2.0 Pro Edition) 📄✨
+# LexGuard (V2.2) 📄🛡️
 
 *Read this in other languages: [English](#english) | [Tiếng Việt](#tiếng-việt)*
 
@@ -8,7 +8,7 @@
 ## 🇬🇧 English
 
 ### Overview
-**OpenDataLoader PDF** is a professional desktop application designed primarily for office environments (especially bailiff offices and legal practices) to extract, convert, and digitize documents. It seamlessly converts **PDF** and **DOCX** files into structured **Markdown, HTML, or plain Text**.
+**LexGuard** is a professional desktop application designed primarily for office environments (especially bailiff offices and legal practices) to extract, convert, digitize, and **protect the privacy of personal data** in documents. It seamlessly converts **PDF** and **DOCX** files into structured **Markdown, HTML, or plain Text**.
 
 ### Core Features
 - 🚀 **Standard Extraction**: Lightning-fast text extraction from native PDF and DOCX files using `PyMuPDF` and `mammoth`.
@@ -19,6 +19,8 @@
 - ⚙️ **AI Profile Management**: Store and switch between multiple API configurations effortlessly, complete with instant API connection testing.
 - 🎯 **Prompt Engineering**: Highly customizable prompts to guide the AI for specialized extraction or on-the-fly translation.
 - 📑 **Page Range Selection**: Process specific pages (e.g., `1-5, 10`) to save time and reduce API costs.
+- 🛡️ **PII Redaction**: Automatically detects and redacts personal identifiers (ID numbers, phone numbers, email, bank accounts, tax codes, birth dates, license plates) in the converted output, replacing them with labelled placeholders like `[ĐÃ ẨN: CCCD]` — in AI Vision OCR mode it also redacts names and addresses.
+- 🗂️ **Convert / Preview / History / Settings tabs**: A dedicated workspace for each task — convert documents, read back the latest result as plain text, browse a searchable processing history (with a per-file PII summary and CSV export), and manage AI profiles/watermark tuning/theme in one spacious tab instead of a small dialog.
 - 🎨 **Modern UI/UX**: Built on `PySide6` featuring a sleek flat design, drag-and-drop file support, and hot-swappable Light/Dark themes.
 
 
@@ -34,7 +36,7 @@
 ## 🇻🇳 Tiếng Việt
 
 ### Tổng quan
-**OpenDataLoader PDF** là một ứng dụng desktop chuyên nghiệp dành cho khối văn phòng (đặc biệt phù hợp với Văn phòng Thừa phát lại, Pháp lý) dùng để trích xuất và số hóa tài liệu. Phần mềm cho phép chuyển đổi mượt mà các tệp định dạng **PDF** và **DOCX** sang định dạng có cấu trúc như **Markdown, HTML, hoặc Text thuần**.
+**LexGuard** là một ứng dụng desktop chuyên nghiệp dành cho khối văn phòng (đặc biệt phù hợp với Văn phòng Thừa phát lại, Pháp lý) dùng để trích xuất, số hóa và **bảo vệ dữ liệu cá nhân** trong tài liệu. Phần mềm cho phép chuyển đổi mượt mà các tệp định dạng **PDF** và **DOCX** sang định dạng có cấu trúc như **Markdown, HTML, hoặc Text thuần**.
 
 ### Tính năng cốt lõi
 - 🚀 **Trích xuất tiêu chuẩn**: Trích xuất văn bản cực nhanh từ file PDF/DOCX gốc bằng `PyMuPDF` và `mammoth`.
@@ -45,6 +47,8 @@
 - ⚙️ **Quản lý Cấu hình AI (Profile)**: Lưu trữ và chuyển đổi linh hoạt giữa nhiều cấu hình API khác nhau, hỗ trợ kiểm tra kết nối API tức thì.
 - 🎯 **Prompt Engineering**: Cho phép tùy biến câu lệnh (prompt) linh hoạt để điều hướng AI trong việc trích xuất chuyên sâu hoặc dịch thuật ngay lập tức.
 - 📑 **Chọn vùng trang (Page Range)**: Xử lý chính xác các trang mong muốn (VD: `1-5, 10`) giúp tiết kiệm thời gian và chi phí gọi API.
+- 🛡️ **Ẩn thông tin cá nhân (PII Redaction)**: Tự động phát hiện và ẩn định danh cá nhân (CCCD/CMND, SĐT, email, số tài khoản, mã số thuế, ngày sinh, biển số xe) trong nội dung xuất ra, thay bằng nhãn `[ĐÃ ẨN: CCCD]`... — riêng chế độ OCR Trí tuệ nhân tạo còn ẩn thêm cả họ tên và địa chỉ.
+- 🗂️ **4 tab: Chuyển đổi / Xem trước / Lịch sử / Cài đặt**: Mỗi tác vụ một không gian riêng — chuyển đổi tài liệu, xem lại kết quả gần nhất dạng văn bản thô, tra cứu lịch sử xử lý (kèm tổng hợp PII đã ẩn theo từng tệp, xuất được CSV), và quản lý cấu hình AI/watermark/giao diện đầy đủ thay vì hộp thoại nhỏ trước đây.
 - 🎨 **Giao diện Hiện đại (UI/UX)**: Xây dựng bằng `PySide6` với thiết kế phẳng (Flat Design), hỗ trợ kéo thả tệp và chuyển đổi nóng giao diện Sáng/Tối (Light/Dark Theme).
 
 

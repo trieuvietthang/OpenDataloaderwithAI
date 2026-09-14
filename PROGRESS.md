@@ -72,4 +72,14 @@ Toàn bộ mục tiêu V2.1 ở trên đã hoàn thành. Backlog dưới đây l
    - **Nhờ AI ẩn thêm họ tên & địa chỉ:** Ở chế độ OCR Trí tuệ nhân tạo, chèn thêm chỉ dẫn vào prompt để AI ẩn hai loại mà regex không nhận ra được.
    - **Đã nối vào cả 4 luồng:** OCR (Tesseract/AI), Docling, DOCX, và Standard (luồng này do thư viện ngoài tự ghi file nên phải xử lý sau khi ghi).
    - **UI:** Thêm ô chọn "Ẩn thông tin định danh cá nhân" ở mục Bảo mật, trạng thái được ghi nhớ trong `config.json`.
-5. [ ] **Tính năng mới khác cho người dùng**: Ví dụ xuất nhiều định dạng cùng lúc trong 1 lần chạy, khôi phục Preview ở dạng nhẹ (không chặn UI), auto-update, cải thiện installer (`installer.iss`).
+5. [x] **Đổi tên sản phẩm + Thiết kế lại giao diện chính**:
+   - **Đổi tên:** "OpenDataLoader PDF" → **"LexGuard"** (*Lex* = luật, *Guard* = bảo vệ) — phản ánh đúng 2 trụ cột hiện tại: xử lý tài liệu pháp lý và bảo vệ dữ liệu cá nhân. Tên file `openloader.py` và thư mục lưu `config.json` giữ nguyên để không làm mất cấu hình/API key đã lưu.
+   - **Thiết kế trước khi code:** Dựng kịch bản thiết kế 4 màn hình bằng canvas trực quan, duyệt và chốt với người dùng trước khi đụng vào code Qt.
+   - **Tái cấu trúc `MainWindow` thành 4 tab** (thay cho 1 trang cuộn dọc duy nhất trước đây, nơi vùng thả tệp chiếm ~40% cửa sổ và cấu hình AI bị nhét vào dialog nhỏ 700×500):
+     - **Chuyển đổi:** vùng thả tệp thu gọn + cấu hình theo từng lô (định dạng, chế độ OCR, trang trích xuất, mật khẩu PDF, bật/tắt nhanh watermark & PII) + nhật ký.
+     - **Xem trước** *(mới)*: đọc lại nội dung tệp vừa chuyển đổi dạng văn bản thô/markdown — cố tình KHÔNG render HTML để tránh lặp lại lỗi treo UI của bản Preview cũ đã gỡ ở V2.0.
+     - **Lịch sử** *(mới)*: bảng tra cứu các lần xử lý trước (tên tệp, thời gian, định dạng, trạng thái, PII đã ẩn), lưu cục bộ vào `lich_su.json` (tối đa 500 mục), xuất được báo cáo CSV.
+     - **Cài đặt:** thay hẳn dialog nhỏ — quản lý đầy đủ AI Profile (CRUD + kiểm tra kết nối), tinh chỉnh watermark nâng cao (lọc pixel/morphology/deep-inpaint/contrast/DPI), hiệu năng OCR AI (số luồng/timeout/số lần thử lại), và giao diện (font/cỡ chữ) — tất cả rộng rãi, không còn chật.
+   - **Kỹ thuật:** `ConversionWorker` phát tín hiệu `fileProcessed` sau mỗi tệp (kèm số lượng PII đã ẩn) để nạp trực tiếp vào tab Lịch sử/Xem trước. Toàn bộ tên biến widget cũ được giữ nguyên khi di chuyển sang tab mới để không phá vỡ logic `save_config`/`load_config`/`start_conversion` đang chạy tốt.
+   - Tiện thể sửa 1 lỗi mojibake cũ (icon cảnh báo Docling hiển thị `������` do lỗi encoding).
+6. [ ] **Tính năng mới khác cho người dùng**: Ví dụ xuất nhiều định dạng cùng lúc trong 1 lần chạy (đã có sẵn), báo cáo tổng kết theo lô, auto-update, cải thiện installer (`installer.iss`).

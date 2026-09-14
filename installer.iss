@@ -1,26 +1,26 @@
 [Setup]
-AppName=OpenDataLoader PDF Pro
-AppVersion=2.1
-DefaultDirName={autopf}\OpenDataLoader
-DefaultGroupName=OpenDataLoader
+AppName=LexGuard
+AppVersion=2.2
+DefaultDirName={autopf}\LexGuard
+DefaultGroupName=LexGuard
 OutputDir=.
-OutputBaseFilename=OpenDataLoader_Setup_V2.1
+OutputBaseFilename=LexGuard_Setup_V2.2
 Compression=lzma2/ultra
 SolidCompression=yes
 SetupIconFile=logo.ico
-UninstallDisplayIcon={app}\OpenDataLoader_PDF_V2.1.exe
+UninstallDisplayIcon={app}\LexGuard.exe
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\OpenDataLoader_PDF_V2.1\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\LexGuard\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\OpenDataLoader PDF Pro"; Filename: "{app}\OpenDataLoader_PDF_V2.1.exe"; IconFilename: "{app}\logo.ico"
-Name: "{group}\{cm:UninstallProgram,OpenDataLoader PDF Pro}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\OpenDataLoader PDF Pro"; Filename: "{app}\OpenDataLoader_PDF_V2.1.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"
+Name: "{group}\LexGuard"; Filename: "{app}\LexGuard.exe"; IconFilename: "{app}\logo.ico"
+Name: "{group}\{cm:UninstallProgram,LexGuard}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\LexGuard"; Filename: "{app}\LexGuard.exe"; Tasks: desktopicon; IconFilename: "{app}\logo.ico"
 
 [Run]
-Filename: "{app}\OpenDataLoader_PDF_V2.1.exe"; Description: "{cm:LaunchProgram,OpenDataLoader PDF Pro}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\LexGuard.exe"; Description: "{cm:LaunchProgram,LexGuard}"; Flags: nowait postinstall skipifsilent

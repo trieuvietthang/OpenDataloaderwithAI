@@ -474,287 +474,6 @@ def ocr_page_with_ai(image_path, profile, max_retries=5, cancel_check=None, time
 
 
 
-class SettingsDialog(QDialog):
-    def __init__(self, parent, config):
-        super().__init__(parent)
-        self.config = config
-        self.setWindowTitle("⚙️ Cài đặt hệ thống")
-        self.setMinimumSize(700, 500)
-
-        self.setStyleSheet("""
-            QDialog { background-color: #f8fafc; }
-            QWidget { color: #1e293b; font-size: 13px; font-family: 'Segoe UI'; }
-            QGroupBox { border: 1px solid #cbd5e1; border-radius: 6px; margin-top: 10px; padding-top: 15px; font-weight: bold; color: #2d3a8c; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QPushButton { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 16px; font-weight: 500; }
-            QPushButton:hover { background-color: #f1f5f9; border-color: #94a3b8; }
-            QPushButton#primaryBtn { background-color: #2d3a8c; color: white; border: none; }
-            QPushButton#primaryBtn:hover { background-color: #1e2865; }
-            QPushButton#dangerBtn { color: #e52b2d; border-color: #e52b2d; }
-            QPushButton#dangerBtn:hover { background-color: #fef2f2; }
-            QLineEdit, QComboBox, QSpinBox { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; }
-            QLineEdit:focus { border-color: #2d3a8c; }
-        """)
-
-        layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        self.tabs.setStyleSheet("QTabBar::tab { padding: 8px 16px; background: #e2e8f0; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; } QTabBar::tab:selected { background: #ffffff; border: 1px solid #cbd5e1; border-bottom: none; font-weight: bold; color: #2d3a8c; } QTabWidget::pane { border: 1px solid #cbd5e1; background: #ffffff; }")
-
-        # Tab AI
-        self.tab_ai = QWidget()
-        self.setup_ai_tab()
-        self.tabs.addTab(self.tab_ai, "🤖 Quản lý cấu hình AI")
-
-        # Tab UI
-        self.tab_ui = QWidget()
-        self.setup_ui_tab()
-        self.tabs.addTab(self.tab_ui, "🎨 Giao diện")
-
-        layout.addWidget(self.tabs)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        self.btnSave = QPushButton("💾 Lưu & Đóng")
-        self.btnSave.setObjectName("primaryBtn")
-        self.btnSave.clicked.connect(self.save_and_close)
-        btn_layout.addWidget(self.btnSave)
-        layout.addLayout(btn_layout)
-
-        self.load_data()
-
-    def setup_ai_tab(self):
-        from PySide6.QtWidgets import QScrollArea
-        layout = QVBoxLayout(self.tab_ai)
-
-        # Default AI Selector
-        top_group = QGroupBox("Trợ lý AI Mặc định")
-        top_layout = QHBoxLayout(top_group)
-        top_layout.addWidget(QLabel("Cấu hình ưu tiên:"))
-        self.default_ai_combo = QComboBox()
-        self.default_ai_combo.setMinimumWidth(250)
-        top_layout.addWidget(self.default_ai_combo)
-
-        # Performance Settings Group
-        perf_group = QGroupBox("Tùy chỉnh Hiệu năng & Đa luồng")
-        perf_layout = QGridLayout(perf_group)
-
-        perf_layout.addWidget(QLabel("Số luồng xử lý (Max Workers):"), 0, 0)
-        self.ai_workers_spin = QSpinBox()
-        self.ai_workers_spin.setRange(1, 10)
-        self.ai_workers_spin.setToolTip("Dùng 1 luồng cho API miễn phí (an toàn). Dùng 4-8 luồng cho Local API.")
-        perf_layout.addWidget(self.ai_workers_spin, 0, 1)
-
-        perf_layout.addWidget(QLabel("Thời gian chờ tối đa (Timeout):"), 1, 0)
-        self.ai_timeout_spin = QSpinBox()
-        self.ai_timeout_spin.setRange(10, 300)
-        self.ai_timeout_spin.setSuffix(" giây")
-        self.ai_timeout_spin.setToolTip("Ngắt kết nối bị kẹt nếu API không phản hồi.")
-        perf_layout.addWidget(self.ai_timeout_spin, 1, 1)
-
-        perf_layout.addWidget(QLabel("Số lần thử lại tự động:"), 2, 0)
-        self.ai_retries_spin = QSpinBox()
-        self.ai_retries_spin.setRange(0, 10)
-        self.ai_retries_spin.setSuffix(" lần")
-        perf_layout.addWidget(self.ai_retries_spin, 2, 1)
-
-        top_layout.addStretch()
-        layout.addWidget(top_group)
-        layout.addWidget(perf_group)
-
-        # Profiles Editor
-        self.profiles_group = QGroupBox("Danh sách cấu hình")
-        group_layout = QVBoxLayout(self.profiles_group)
-
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.NoFrame)
-        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
-
-        self.scroll_widget = QWidget()
-        self.scroll_widget.setStyleSheet("QWidget { background: transparent; }")
-        self.profiles_layout = QVBoxLayout(self.scroll_widget)
-        self.profiles_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_area.setWidget(self.scroll_widget)
-
-        group_layout.addWidget(self.scroll_area)
-        self.profile_widgets = []
-        layout.addWidget(self.profiles_group)
-
-        add_btn = QPushButton("➕ Thêm cấu hình mới")
-        add_btn.clicked.connect(lambda: self.add_profile_ui({}))
-        layout.addWidget(add_btn, alignment=Qt.AlignLeft)
-
-    def add_profile_ui(self, profile_data):
-        from PySide6.QtWidgets import QFrame
-        frame = QFrame()
-        frame.setMinimumHeight(280)
-        frame.setStyleSheet("QFrame { border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; padding: 5px; } QLabel { border: none; background: transparent; } QLineEdit { background: #ffffff; }")
-        flayout = QFormLayout(frame)
-
-        name_edit = QLineEdit(profile_data.get("name", "Cấu hình mới"))
-        api_type = QComboBox()
-        api_type.addItems(["Google Gemini", "OpenAI-Compatible (OpenAI, Claude...)"])
-        api_type.setCurrentIndex(0 if profile_data.get("api_type", "gemini") == "gemini" else 1)
-
-        base_url = QLineEdit(profile_data.get("base_url", "https://generativelanguage.googleapis.com/v1beta"))
-        model_name = QLineEdit(profile_data.get("model", "gemini-2.5-flash"))
-        api_key = QLineEdit(profile_data.get("api_key", ""))
-        api_key.setEchoMode(QLineEdit.Password)
-
-        from PySide6.QtWidgets import QTextEdit
-        prompt_edit = QTextEdit()
-        prompt_edit.setPlaceholderText("Để trống sẽ dùng lệnh mặc định của phần mềm. Ví dụ: Dịch tài liệu này sang tiếng Việt...")
-        prompt_edit.setText(profile_data.get("prompt", ""))
-        prompt_edit.setMaximumHeight(60)
-
-        headers_edit = QLineEdit(profile_data.get("headers", "{}"))
-
-        del_btn = QPushButton("🗑 Xóa")
-        del_btn.setObjectName("dangerBtn")
-        del_btn.clicked.connect(lambda: self.remove_profile(frame))
-
-        test_btn = QPushButton("🔄 Kiểm tra kết nối")
-        test_btn.clicked.connect(lambda _, f=frame: self.test_connection(f))
-
-        header_layout = QHBoxLayout()
-        header_layout.addStretch()
-        header_layout.addWidget(test_btn)
-        header_layout.addWidget(del_btn)
-
-        flayout.addRow(header_layout)
-        flayout.addRow("Tên hiển thị:", name_edit)
-        flayout.addRow("Chuẩn kết nối:", api_type)
-        flayout.addRow("Base URL:", base_url)
-        flayout.addRow("Tên Model:", model_name)
-        flayout.addRow("API Key:", api_key)
-        flayout.addRow("Lệnh AI (Prompt):", prompt_edit)
-        flayout.addRow("Custom Headers (JSON):", headers_edit)
-
-        frame.data_widgets = {
-            "name": name_edit,
-            "api_type": api_type,
-            "base_url": base_url,
-            "model": model_name,
-            "api_key": api_key,
-            "prompt": prompt_edit,
-            "headers": headers_edit
-        }
-
-        self.profiles_layout.addWidget(frame)
-        self.profile_widgets.append(frame)
-        self.update_default_combo()
-        name_edit.textChanged.connect(self.update_default_combo)
-
-    def remove_profile(self, frame):
-        self.profiles_layout.removeWidget(frame)
-        self.profile_widgets.remove(frame)
-        frame.deleteLater()
-
-    def test_connection(self, frame):
-        from PySide6.QtWidgets import QMessageBox
-        w = frame.data_widgets
-        profile = {
-            "api_type": "gemini" if w["api_type"].currentIndex() == 0 else "openai",
-            "base_url": w["base_url"].text().strip(),
-            "model": w["model"].text().strip(),
-            "api_key": w["api_key"].text().strip(),
-            "prompt": w["prompt"].toPlainText(),
-            "headers": w["headers"].text().strip()
-        }
-
-        if not profile["api_key"]:
-            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập API Key trước khi kiểm tra.")
-            return
-
-        valid, msg = validate_ai_profile(profile)
-        if valid:
-            QMessageBox.information(self, "Thành công", f"Kết nối thành công!\n\n{msg}")
-        else:
-            QMessageBox.warning(self, "Thất bại", f"Không thể kết nối đến AI:\n\n{msg}")
-        self.update_default_combo()
-
-    def update_default_combo(self):
-        current_idx = self.default_ai_combo.currentIndex()
-        self.default_ai_combo.clear()
-        for frame in self.profile_widgets:
-            name = frame.data_widgets["name"].text()
-            self.default_ai_combo.addItem(name)
-        if current_idx >= 0 and current_idx < self.default_ai_combo.count():
-            self.default_ai_combo.setCurrentIndex(current_idx)
-
-    def setup_ui_tab(self):
-        layout = QFormLayout(self.tab_ui)
-        self.font_combo = QFontComboBox()
-        self.font_size = QSpinBox()
-        self.font_size.setRange(9, 24)
-
-        layout.addRow("Font chữ hiển thị:", self.font_combo)
-        layout.addRow("Cỡ chữ (px):", self.font_size)
-
-    def load_data(self):
-        ai_profiles = self.config.get("ai_profiles", [])
-        if not ai_profiles:
-            ai_profiles = [{
-                "id": "default",
-                "name": "AI (Mặc định)",
-                "api_type": "gemini",
-                "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                "model": "gemini-2.5-flash",
-                "api_key": "",
-                "headers": "{}"
-            }]
-
-        for p in ai_profiles:
-            self.add_profile_ui(p)
-
-        active_idx = 0
-        active_id = self.config.get("active_ai_profile_id", "")
-        for i, p in enumerate(ai_profiles):
-            if p.get("id") == active_id:
-                active_idx = i
-                break
-        self.default_ai_combo.setCurrentIndex(active_idx)
-
-        self.ai_workers_spin.setValue(self.config.get("ai_max_workers", 4))
-        self.ai_timeout_spin.setValue(self.config.get("ai_timeout", 120))
-        self.ai_retries_spin.setValue(self.config.get("ai_max_retries", 5))
-
-        ui_set = self.config.get("ui_settings", {})
-        self.font_combo.setCurrentFont(QFont(ui_set.get("font_family", "Segoe UI")))
-        self.font_size.setValue(ui_set.get("font_size", 13))
-
-    def save_and_close(self):
-        profiles = []
-        for i, frame in enumerate(self.profile_widgets):
-            w = frame.data_widgets
-            profiles.append({
-                "id": f"profile_{i}",
-                "name": w["name"].text(),
-                "api_type": "gemini" if w["api_type"].currentIndex() == 0 else "openai",
-                "base_url": w["base_url"].text(),
-                "model": w["model"].text(),
-                "api_key": w["api_key"].text(),
-                "prompt": w["prompt"].toPlainText(),
-                "headers": w["headers"].text()
-            })
-
-        active_idx = self.default_ai_combo.currentIndex()
-        active_id = profiles[active_idx]["id"] if profiles and active_idx >= 0 else ""
-
-        self.config["ai_profiles"] = profiles
-        self.config["active_ai_profile_id"] = active_id
-
-        self.config["ai_max_workers"] = self.ai_workers_spin.value()
-        self.config["ai_timeout"] = self.ai_timeout_spin.value()
-        self.config["ai_max_retries"] = self.ai_retries_spin.value()
-
-        self.config["ui_settings"] = {
-            "font_family": self.font_combo.currentFont().family(),
-            "font_size": self.font_size.value()
-        }
-
-        self.accept()
-
 class FileDropZone(QFrame):
     """Custom QFrame that handles drag and drop of files and folders."""
     filesDropped = Signal(list)
@@ -961,6 +680,7 @@ class ConversionWorker(QThread):
     progress_detail = Signal(str)
     log = Signal(str, str)
     finished = Signal(bool, int)
+    fileProcessed = Signal(dict)
 
     def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_deep_inpaint=False, use_contrast=True, dpi=300, ai_max_workers=4, ai_timeout=120, ai_max_retries=5, redact_pii_enabled=False):
         super().__init__()
@@ -982,6 +702,7 @@ class ConversionWorker(QThread):
         self.use_contrast = use_contrast
         self.dpi = dpi
         self._cancelled = False
+        self._pii_counts_this_file = {}
 
     def cancel(self):
         """Request cancellation of the conversion process."""
@@ -993,6 +714,10 @@ class ConversionWorker(QThread):
             return text
         redacted, counts = redact_pii(text)
         if counts:
+            if not hasattr(self, "_pii_counts_this_file"):
+                self._pii_counts_this_file = {}
+            for label, num in counts.items():
+                self._pii_counts_this_file[label] = self._pii_counts_this_file.get(label, 0) + num
             detail = ", ".join(f"{label} x{num}" for label, num in counts.items())
             self.log.emit(f"  Đã ẩn thông tin cá nhân ({detail})", "success")
         return redacted
@@ -1118,6 +843,7 @@ class ConversionWorker(QThread):
             self.progress_detail.emit(f"Đang xử lý: {file_path.name} ({index+1}/{total_files})")
 
             file_success = False
+            self._pii_counts_this_file = {}
 
             current_out_dir = self.output_dir if self.output_dir else str(file_path.parent)
             os.makedirs(current_out_dir, exist_ok=True)
@@ -1318,6 +1044,22 @@ class ConversionWorker(QThread):
             except Exception as e:
                 self.log.emit(f"Lỗi khi xử lý {file_path.name}: {str(e)}", "error")
                 self.log.emit(traceback.format_exc(), "error")
+
+            preview_path = None
+            preview_fmt = "markdown" if "markdown" in self.formats else (self.formats[0] if self.formats else None)
+            if preview_fmt:
+                candidate = Path(current_out_dir) / f"{file_path.stem}.{FORMAT_EXTENSIONS.get(preview_fmt, preview_fmt)}"
+                if candidate.exists():
+                    preview_path = str(candidate)
+
+            self.fileProcessed.emit({
+                "filename": file_path.name,
+                "formats": list(self.formats),
+                "success": file_success,
+                "pii_counts": dict(self._pii_counts_this_file),
+                "preview_path": preview_path,
+                "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            })
 
             progress_pct = int(((index + 1) / total_files) * 100)
             self.progress.emit(progress_pct)
@@ -1799,7 +1541,7 @@ class ConversionWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bộ Chuyển Đổi Tài Liệu PDF & DOCX")
+        self.setWindowTitle("LexGuard — Chuyển Đổi & Bảo Mật Tài Liệu")
         icon_path = APP_DIR / "icon.ico"
         if not icon_path.exists():
             icon_path = APP_DIR / "icon.png"
@@ -1807,30 +1549,25 @@ class MainWindow(QMainWindow):
             icon_path = APP_DIR / "logo.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(750, 750)
-        self.setMinimumSize(600, 650)
+        self.resize(1280, 800)
+        self.setMinimumSize(960, 650)
 
         self.input_paths = []
         self.worker = None
         self.java_installer_worker = None
         self.tesseract_installer_worker = None
+        self.history = []
+        self.last_preview_path = None
 
         self.setup_styles()
 
-        from PySide6.QtWidgets import QScrollArea
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
-
         central_widget = QWidget()
         central_widget.setObjectName("mainCentralWidget")
-        scroll_area.setWidget(central_widget)
-        self.setCentralWidget(scroll_area)
+        self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(12)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(20, 16, 20, 12)
+        root_layout.setSpacing(10)
 
         # Header Section
         header_layout = QHBoxLayout()
@@ -1841,20 +1578,21 @@ class MainWindow(QMainWindow):
         if logo_path.exists():
             logo_label = QLabel(self)
             pixmap = QPixmap(str(logo_path))
-            logo_label.setPixmap(pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo_label.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             header_layout.addWidget(logo_label)
 
         title_container = QVBoxLayout()
 
-        self.titleLabel = QLabel("OpenDataLoader Document Converter", self)
+        self.titleLabel = QLabel("LexGuard", self)
         self.titleLabel.setObjectName("titleLabel")
         title_container.addWidget(self.titleLabel)
 
-        self.subtitleLabel = QLabel("Chuyển đổi PDF và Word (DOCX) sang định dạng Markdown, JSON, HTML, Text chất lượng cao", self)
+        self.subtitleLabel = QLabel("Chuyển đổi, số hóa & bảo mật tài liệu PDF/DOCX cho Văn phòng Thừa phát lại", self)
         self.subtitleLabel.setObjectName("subtitleLabel")
         title_container.addWidget(self.subtitleLabel)
 
         header_layout.addLayout(title_container)
+        header_layout.addStretch()
 
         # Java indicator icon
         self.javaStatusLabel = QLabel(self)
@@ -1868,7 +1606,7 @@ class MainWindow(QMainWindow):
         self.btnThemeToggle.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.btnThemeToggle)
 
-        main_layout.addLayout(header_layout)
+        root_layout.addLayout(header_layout)
 
         # Java Warning Banner
         self.javaWarningBanner = QFrame(self)
@@ -1893,7 +1631,7 @@ class MainWindow(QMainWindow):
         self.btnManualDownloadJava.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://adoptium.net/")))
         banner_layout.addWidget(self.btnManualDownloadJava, stretch=1)
 
-        main_layout.addWidget(self.javaWarningBanner)
+        root_layout.addWidget(self.javaWarningBanner)
 
         # Tesseract OCR Warning Banner (Hidden by default, shown if Tesseract is missing when selected)
         self.tessWarningBanner = QFrame(self)
@@ -1912,7 +1650,7 @@ class MainWindow(QMainWindow):
         self.btnAutoInstallTess.clicked.connect(self.auto_install_tesseract)
         tess_banner_layout.addWidget(self.btnAutoInstallTess, stretch=1)
 
-        main_layout.addWidget(self.tessWarningBanner)
+        root_layout.addWidget(self.tessWarningBanner)
         self.tessWarningBanner.hide()
 
         # Docling OCR Warning Banner (Hidden by default, shown if Docling is missing when selected)
@@ -1922,7 +1660,7 @@ class MainWindow(QMainWindow):
         docling_banner_layout = QHBoxLayout(self.doclingWarningBanner)
         docling_banner_layout.setContentsMargins(10, 4, 10, 4)
 
-        self.doclingBannerLabel = QLabel("������ Chưa tìm thấy Docling. Cài đặt tự động để sử dụng OCR AI ngoại tuyến với TableFormer?", self)
+        self.doclingBannerLabel = QLabel("⚠️ Chưa tìm thấy Docling. Cài đặt tự động để sử dụng OCR AI ngoại tuyến với TableFormer?", self)
         self.doclingBannerLabel.setObjectName("infoText")
         docling_banner_layout.addWidget(self.doclingBannerLabel, stretch=4)
 
@@ -1931,13 +1669,55 @@ class MainWindow(QMainWindow):
         self.btnAutoInstallDocling.clicked.connect(self.auto_install_docling)
         docling_banner_layout.addWidget(self.btnAutoInstallDocling, stretch=1)
 
-        main_layout.addWidget(self.doclingWarningBanner)
+        root_layout.addWidget(self.doclingWarningBanner)
         self.doclingWarningBanner.hide()
 
-        # Drop Zone (Interactive)
+        # Tabs — thay cho trang cuộn dọc duy nhất trước đây
+        self.mainTabs = QTabWidget()
+        self.mainTabs.setObjectName("mainTabs")
+        root_layout.addWidget(self.mainTabs, stretch=1)
+
+        self.mainTabs.addTab(self._build_convert_tab(), "🔄  Chuyển đổi")
+        self.mainTabs.addTab(self._build_preview_tab(), "👁  Xem trước")
+        self.mainTabs.addTab(self._build_history_tab(), "🕘  Lịch sử")
+        self.mainTabs.addTab(self._build_settings_tab(), "⚙️  Cài đặt")
+
+        # Status Bar
+        status_bar = self.statusBar()
+
+        status_bar.showMessage("✨ Sẵn sàng — Kéo thả hoặc chọn tệp để bắt đầu")
+
+        # Startup checks
+        if self.check_java_status():
+            self.javaWarningBanner.hide()
+
+        self.check_dependencies_on_startup()
+        self.load_config()
+        self.load_history()
+
+    def _build_convert_tab(self):
+        """Tab 'Chuyển đổi': vùng thả tệp thu gọn + cấu hình theo từng lô + nhật ký."""
+        tab = QWidget()
+        outer = QHBoxLayout(tab)
+        outer.setContentsMargins(2, 12, 2, 2)
+
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
+
+        left_widget = QWidget()
+        main_layout = QVBoxLayout(left_widget)
+        main_layout.setContentsMargins(0, 0, 4, 0)
+        main_layout.setSpacing(12)
+        scroll_area.setWidget(left_widget)
+
+        # Drop Zone (Interactive) — thu gọn so với bản cũ (không còn chiếm ~40% cửa sổ)
         self.dropZone = FileDropZone(self)
         self.dropZone.filesDropped.connect(self.handle_files_input)
-        main_layout.addWidget(self.dropZone, stretch=3)
+        self.dropZone.setMaximumHeight(110)
+        main_layout.addWidget(self.dropZone)
 
         # Configuration Panel
         config_frame = QFrame(self)
@@ -1976,20 +1756,15 @@ class MainWindow(QMainWindow):
         ])
 
         self.ocrCombo.currentIndexChanged.connect(self.handle_ocr_mode_change)
-        self.btnSettings = QPushButton('⚙️ Cài đặt')
-        self.btnSettings.clicked.connect(self.open_settings)
-        config_layout.addWidget(self.btnSettings, 1, 2)
-        ocr_layout.addWidget(self.ocrCombo, stretch=2)
+        ocr_layout.addWidget(self.ocrCombo, stretch=1)
         config_layout.addLayout(ocr_layout, 1, 1)
 
-        # 3. Gemini Key Input (Only shown when Gemini mode is active)
+        # 3. Active AI profile caption (chỉ hiện khi chọn chế độ OCR AI; quản lý đầy đủ ở tab Cài đặt)
         self.geminiKeyLabel = QLabel("<b>Cấu hình AI:</b>", self)
         config_layout.addWidget(self.geminiKeyLabel, 2, 0)
 
         self.geminiKeyEdit = QLabel("Chưa chọn cấu hình", self)
         self.geminiKeyEdit.setStyleSheet("color: #2d3a8c; font-weight: bold;")
-
-
         config_layout.addWidget(self.geminiKeyEdit, 2, 1)
 
         self.geminiKeyLabel.hide()
@@ -2001,7 +1776,6 @@ class MainWindow(QMainWindow):
         self.outPathEdit = QLineEdit(self)
         self.outPathEdit.setPlaceholderText("Mặc định: Cùng thư mục với file nguồn")
         self.outPathEdit.setReadOnly(True)
-
 
         self.btnBrowseOut = QPushButton("Chọn thư mục", self)
         self.btnBrowseOut.setObjectName("browseBtn")
@@ -2029,60 +1803,19 @@ class MainWindow(QMainWindow):
         self.pdfPasswordEdit.setPlaceholderText("Bỏ trống nếu chỉ gỡ giới hạn in ấn/copy")
         config_layout.addWidget(self.pdfPasswordEdit, 5, 1)
 
-        # 7. Watermark Removal
-        config_layout.addWidget(QLabel("<b>Tiền Xử Lý:</b>", self), 6, 0)
-
-        watermark_layout = QVBoxLayout()
-        watermark_layout.setSpacing(5)
-
-        self.cbRemoveWatermark = QCheckBox("Xóa Watermark dạng OCG (Lớp ẩn)", self)
-        watermark_layout.addWidget(self.cbRemoveWatermark)
-
-        # Advanced options frame
-        self.adv_watermark_frame = QFrame()
-        adv_layout = QHBoxLayout(self.adv_watermark_frame)
-        adv_layout.setContentsMargins(20, 0, 0, 0)
-
-        self.cbPixelFilter = QCheckBox("Lọc Pixel (Ảnh xám)", self)
-        self.cbPixelFilter.setChecked(True)
-        self.cbMorphology = QCheckBox("Phục hồi nét (Cơ bản)", self)
-        self.cbMorphology.setChecked(True)
-        self.cbDeepInpaint = QCheckBox("Giữ nét giao cắt (W.mark to)", self)
-        self.cbDeepInpaint.setChecked(False)
-        self.cbContrast = QCheckBox("Tăng tương phản", self)
-        self.cbContrast.setChecked(True)
-
-        dpi_layout = QHBoxLayout()
-        dpi_layout.addWidget(QLabel("DPI (OCR):"))
-        from PySide6.QtWidgets import QSpinBox
-        self.dpiSpin = QSpinBox(self)
-        self.dpiSpin.setRange(72, 600)
-        self.dpiSpin.setValue(300)
-        self.dpiSpin.setToolTip("Độ phân giải khi render PDF ra ảnh để OCR (chuẩn 300)")
-        dpi_layout.addWidget(self.dpiSpin)
-
-        adv_layout.addWidget(self.cbPixelFilter)
-        adv_layout.addWidget(self.cbMorphology)
-        adv_layout.addWidget(self.cbDeepInpaint)
-        adv_layout.addWidget(self.cbContrast)
-        adv_layout.addLayout(dpi_layout)
-        adv_layout.addStretch()
-
-        watermark_layout.addWidget(self.adv_watermark_frame)
-
-        self.cbRemoveWatermark.toggled.connect(self.adv_watermark_frame.setVisible)
-        self.adv_watermark_frame.setVisible(False)
-
-        config_layout.addLayout(watermark_layout, 6, 1)
-
-        # 8. PII Redaction
-        config_layout.addWidget(QLabel("<b>Bảo mật:</b>", self), 7, 0)
-        self.cbRedactPii = QCheckBox("Ẩn thông tin định danh cá nhân (CCCD, SĐT, email, STK...)", self)
+        # 7. Tùy chọn bảo mật nhanh (bật/tắt theo từng lô hồ sơ) — tinh chỉnh nâng cao nằm ở tab Cài đặt
+        config_layout.addWidget(QLabel("<b>Bảo mật &amp; Watermark:</b>", self), 6, 0)
+        quick_toggle_layout = QHBoxLayout()
+        self.cbRemoveWatermark = QCheckBox("Xóa Watermark", self)
+        self.cbRedactPii = QCheckBox("Ẩn thông tin cá nhân (PII)", self)
         self.cbRedactPii.setToolTip(
             "Thay thông tin cá nhân trong file kết quả bằng nhãn [ĐÃ ẨN: ...].\n"
             "Ở chế độ OCR Trí tuệ nhân tạo, AI sẽ ẩn thêm cả họ tên và địa chỉ."
         )
-        config_layout.addWidget(self.cbRedactPii, 7, 1)
+        quick_toggle_layout.addWidget(self.cbRemoveWatermark)
+        quick_toggle_layout.addWidget(self.cbRedactPii)
+        quick_toggle_layout.addStretch()
+        config_layout.addLayout(quick_toggle_layout, 6, 1)
 
         main_layout.addWidget(config_frame)
 
@@ -2093,7 +1826,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.progressBar)
 
         self.progressLabel = QLabel("", self)
-        self.progressLabel.setObjectName("progressLabel")
         self.progressLabel.setObjectName("progressLabel")
         main_layout.addWidget(self.progressLabel)
 
@@ -2134,19 +1866,417 @@ class MainWindow(QMainWindow):
         self.logConsole = QTextBrowser(self)
         self.logConsole.setObjectName("logConsole")
         self.logConsole.setReadOnly(True)
-        main_layout.addWidget(self.logConsole, stretch=2)
+        self.logConsole.setMinimumHeight(160)
+        main_layout.addWidget(self.logConsole, stretch=1)
 
-        # Status Bar
-        status_bar = self.statusBar()
+        outer.addWidget(scroll_area, stretch=1)
+        return tab
 
-        status_bar.showMessage("✨ Sẵn sàng — Kéo thả hoặc chọn tệp để bắt đầu")
+    def _build_preview_tab(self):
+        """Tab 'Xem trước': văn bản thô/markdown, KHÔNG render HTML để tránh treo UI như bản cũ."""
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+        layout.setContentsMargins(2, 12, 2, 2)
+        layout.setSpacing(16)
 
-        # Startup checks
-        if self.check_java_status():
-            self.javaWarningBanner.hide()
+        sidebar = QFrame(self)
+        sidebar.setObjectName("configFrame")
+        sidebar.setMaximumWidth(260)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_layout.addWidget(QLabel("<b>Tệp vừa chuyển đổi</b>", self))
 
-        self.check_dependencies_on_startup()
-        self.load_config()
+        from PySide6.QtWidgets import QListWidget
+        self.previewFileList = QListWidget(self)
+        self.previewFileList.currentItemChanged.connect(self._on_preview_selection_changed)
+        sidebar_layout.addWidget(self.previewFileList)
+        layout.addWidget(sidebar)
+
+        preview_pane = QVBoxLayout()
+
+        preview_header = QHBoxLayout()
+        self.previewFileLabel = QLabel("Chưa có tệp nào để xem trước", self)
+        self.previewFileLabel.setStyleSheet("font-weight: 700; font-size: 14px;")
+        preview_header.addWidget(self.previewFileLabel, stretch=1)
+        self.btnCopyPreview = QPushButton("📋 Sao chép", self)
+        self.btnCopyPreview.clicked.connect(self._copy_preview_content)
+        preview_header.addWidget(self.btnCopyPreview)
+        preview_pane.addLayout(preview_header)
+
+        from PySide6.QtWidgets import QPlainTextEdit
+        self.previewText = QPlainTextEdit(self)
+        self.previewText.setReadOnly(True)
+        self.previewText.setObjectName("previewText")
+        self.previewText.setPlaceholderText(
+            "Nội dung tệp vừa chuyển đổi sẽ hiện ở đây (văn bản thô, không render HTML để không làm treo giao diện)."
+        )
+        preview_pane.addWidget(self.previewText, stretch=1)
+
+        layout.addLayout(preview_pane, stretch=1)
+        return tab
+
+    def _build_history_tab(self):
+        """Tab 'Lịch sử': tra lại các lần chuyển đổi trước, gồm cả thông tin PII đã ẩn."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(2, 12, 2, 2)
+        layout.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("<b>Lịch sử xử lý</b>", self))
+        toolbar.addStretch()
+        self.btnExportHistory = QPushButton("⬇️ Xuất báo cáo (.csv)", self)
+        self.btnExportHistory.clicked.connect(self.export_history_csv)
+        toolbar.addWidget(self.btnExportHistory)
+        layout.addLayout(toolbar)
+
+        from PySide6.QtWidgets import QTableWidget, QHeaderView
+        self.historyTable = QTableWidget(0, 5, self)
+        self.historyTable.setHorizontalHeaderLabels(["Tên tệp", "Thời gian", "Định dạng", "Trạng thái", "PII đã ẩn"])
+        self.historyTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.historyTable.verticalHeader().setVisible(False)
+        self.historyTable.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.historyTable.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.historyTable, stretch=1)
+
+        return tab
+
+    def _build_settings_tab(self):
+        """Tab 'Cài đặt': thay cho hộp thoại nhỏ trước đây — đủ chỗ cho cấu hình AI, watermark, giao diện."""
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(2, 12, 2, 2)
+
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(16)
+        scroll_area.setWidget(content)
+        outer.addWidget(scroll_area)
+
+        # --- Cấu hình AI ---
+        ai_group = QGroupBox("🤖 Cấu hình AI")
+        ai_layout = QVBoxLayout(ai_group)
+
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(QLabel("Cấu hình ưu tiên (dùng cho chế độ OCR Trí tuệ nhân tạo):"))
+        self.default_ai_combo = QComboBox()
+        self.default_ai_combo.setMinimumWidth(250)
+        top_layout.addWidget(self.default_ai_combo)
+        top_layout.addStretch()
+        ai_layout.addLayout(top_layout)
+
+        perf_layout = QGridLayout()
+        perf_layout.addWidget(QLabel("Số luồng xử lý (Max Workers):"), 0, 0)
+        self.ai_workers_spin = QSpinBox()
+        self.ai_workers_spin.setRange(1, 10)
+        self.ai_workers_spin.setToolTip("Dùng 1 luồng cho API miễn phí (an toàn). Dùng 4-8 luồng cho Local API.")
+        perf_layout.addWidget(self.ai_workers_spin, 0, 1)
+
+        perf_layout.addWidget(QLabel("Thời gian chờ tối đa (Timeout):"), 1, 0)
+        self.ai_timeout_spin = QSpinBox()
+        self.ai_timeout_spin.setRange(10, 300)
+        self.ai_timeout_spin.setSuffix(" giây")
+        self.ai_timeout_spin.setToolTip("Ngắt kết nối bị kẹt nếu API không phản hồi.")
+        perf_layout.addWidget(self.ai_timeout_spin, 1, 1)
+
+        perf_layout.addWidget(QLabel("Số lần thử lại tự động:"), 2, 0)
+        self.ai_retries_spin = QSpinBox()
+        self.ai_retries_spin.setRange(0, 10)
+        self.ai_retries_spin.setSuffix(" lần")
+        perf_layout.addWidget(self.ai_retries_spin, 2, 1)
+        ai_layout.addLayout(perf_layout)
+
+        self.profiles_group = QGroupBox("Danh sách cấu hình")
+        group_layout = QVBoxLayout(self.profiles_group)
+
+        self.profiles_scroll_area = QScrollArea()
+        self.profiles_scroll_area.setWidgetResizable(True)
+        self.profiles_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.profiles_scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
+        self.profiles_scroll_area.setMinimumHeight(320)
+
+        self.scroll_widget = QWidget()
+        self.scroll_widget.setStyleSheet("QWidget { background: transparent; }")
+        self.profiles_layout = QVBoxLayout(self.scroll_widget)
+        self.profiles_layout.setContentsMargins(0, 0, 0, 0)
+        self.profiles_scroll_area.setWidget(self.scroll_widget)
+
+        group_layout.addWidget(self.profiles_scroll_area)
+        self.profile_widgets = []
+        ai_layout.addWidget(self.profiles_group)
+
+        add_btn = QPushButton("➕ Thêm cấu hình mới")
+        add_btn.clicked.connect(lambda: self.add_profile_ui({}))
+        ai_layout.addWidget(add_btn, alignment=Qt.AlignLeft)
+
+        layout.addWidget(ai_group)
+
+        # --- Watermark nâng cao ---
+        wm_group = QGroupBox("🛡️ Watermark nâng cao")
+        wm_layout = QHBoxLayout(wm_group)
+
+        self.cbPixelFilter = QCheckBox("Lọc Pixel (Ảnh xám)", self)
+        self.cbPixelFilter.setChecked(True)
+        self.cbMorphology = QCheckBox("Phục hồi nét (Cơ bản)", self)
+        self.cbMorphology.setChecked(True)
+        self.cbDeepInpaint = QCheckBox("Giữ nét giao cắt (W.mark to)", self)
+        self.cbDeepInpaint.setChecked(False)
+        self.cbContrast = QCheckBox("Tăng tương phản", self)
+        self.cbContrast.setChecked(True)
+
+        wm_layout.addWidget(self.cbPixelFilter)
+        wm_layout.addWidget(self.cbMorphology)
+        wm_layout.addWidget(self.cbDeepInpaint)
+        wm_layout.addWidget(self.cbContrast)
+
+        dpi_layout = QHBoxLayout()
+        dpi_layout.addWidget(QLabel("DPI (OCR):"))
+        self.dpiSpin = QSpinBox(self)
+        self.dpiSpin.setRange(72, 600)
+        self.dpiSpin.setValue(300)
+        self.dpiSpin.setToolTip("Độ phân giải khi render PDF ra ảnh để OCR (chuẩn 300)")
+        dpi_layout.addWidget(self.dpiSpin)
+        wm_layout.addLayout(dpi_layout)
+        wm_layout.addStretch()
+
+        layout.addWidget(wm_group)
+
+        # --- Giao diện ---
+        ui_group = QGroupBox("🎨 Giao diện")
+        ui_layout = QFormLayout(ui_group)
+        self.font_combo = QFontComboBox()
+        self.font_size = QSpinBox()
+        self.font_size.setRange(9, 24)
+        ui_layout.addRow("Font chữ hiển thị:", self.font_combo)
+        ui_layout.addRow("Cỡ chữ (px):", self.font_size)
+        layout.addWidget(ui_group)
+
+        layout.addStretch()
+
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        self.btnSaveSettings = QPushButton("💾 Lưu cài đặt")
+        self.btnSaveSettings.setObjectName("primaryBtn")
+        self.btnSaveSettings.clicked.connect(self._save_settings_tab)
+        save_row.addWidget(self.btnSaveSettings)
+        outer.addLayout(save_row)
+
+        return tab
+
+    def _save_settings_tab(self):
+        self.save_config()
+        self.apply_config_ui()
+        self.statusBar().showMessage("✅ Đã lưu cài đặt", 3000)
+
+    # ---- AI profile editor (trước đây thuộc SettingsDialog, nay là 1 phần của tab Cài đặt) ----
+
+    def add_profile_ui(self, profile_data):
+        frame = QFrame()
+        frame.setMinimumHeight(260)
+        frame.setStyleSheet("QFrame { border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; padding: 5px; } QLabel { border: none; background: transparent; } QLineEdit { background: #ffffff; }")
+        flayout = QFormLayout(frame)
+
+        name_edit = QLineEdit(profile_data.get("name", "Cấu hình mới"))
+        api_type = QComboBox()
+        api_type.addItems(["Google Gemini", "OpenAI-Compatible (OpenAI, Claude...)"])
+        api_type.setCurrentIndex(0 if profile_data.get("api_type", "gemini") == "gemini" else 1)
+
+        base_url = QLineEdit(profile_data.get("base_url", "https://generativelanguage.googleapis.com/v1beta"))
+        model_name = QLineEdit(profile_data.get("model", "gemini-2.5-flash"))
+        api_key = QLineEdit(profile_data.get("api_key", ""))
+        api_key.setEchoMode(QLineEdit.Password)
+
+        from PySide6.QtWidgets import QTextEdit
+        prompt_edit = QTextEdit()
+        prompt_edit.setPlaceholderText("Để trống sẽ dùng lệnh mặc định của phần mềm. Ví dụ: Dịch tài liệu này sang tiếng Việt...")
+        prompt_edit.setText(profile_data.get("prompt", ""))
+        prompt_edit.setMaximumHeight(60)
+
+        headers_edit = QLineEdit(profile_data.get("headers", "{}"))
+
+        del_btn = QPushButton("🗑 Xóa")
+        del_btn.setObjectName("dangerBtn")
+        del_btn.clicked.connect(lambda: self.remove_profile(frame))
+
+        test_btn = QPushButton("🔄 Kiểm tra kết nối")
+        test_btn.clicked.connect(lambda _, f=frame: self.test_connection(f))
+
+        header_layout = QHBoxLayout()
+        header_layout.addStretch()
+        header_layout.addWidget(test_btn)
+        header_layout.addWidget(del_btn)
+
+        flayout.addRow(header_layout)
+        flayout.addRow("Tên hiển thị:", name_edit)
+        flayout.addRow("Chuẩn kết nối:", api_type)
+        flayout.addRow("Base URL:", base_url)
+        flayout.addRow("Tên Model:", model_name)
+        flayout.addRow("API Key:", api_key)
+        flayout.addRow("Lệnh AI (Prompt):", prompt_edit)
+        flayout.addRow("Custom Headers (JSON):", headers_edit)
+
+        frame.data_widgets = {
+            "name": name_edit,
+            "api_type": api_type,
+            "base_url": base_url,
+            "model": model_name,
+            "api_key": api_key,
+            "prompt": prompt_edit,
+            "headers": headers_edit
+        }
+
+        self.profiles_layout.addWidget(frame)
+        self.profile_widgets.append(frame)
+        self.update_default_combo()
+        name_edit.textChanged.connect(self.update_default_combo)
+
+    def remove_profile(self, frame):
+        self.profiles_layout.removeWidget(frame)
+        self.profile_widgets.remove(frame)
+        frame.deleteLater()
+
+    def test_connection(self, frame):
+        w = frame.data_widgets
+        profile = {
+            "api_type": "gemini" if w["api_type"].currentIndex() == 0 else "openai",
+            "base_url": w["base_url"].text().strip(),
+            "model": w["model"].text().strip(),
+            "api_key": w["api_key"].text().strip(),
+            "prompt": w["prompt"].toPlainText(),
+            "headers": w["headers"].text().strip()
+        }
+
+        if not profile["api_key"]:
+            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập API Key trước khi kiểm tra.")
+            return
+
+        valid, msg = validate_ai_profile(profile)
+        if valid:
+            QMessageBox.information(self, "Thành công", f"Kết nối thành công!\n\n{msg}")
+        else:
+            QMessageBox.warning(self, "Thất bại", f"Không thể kết nối đến AI:\n\n{msg}")
+        self.update_default_combo()
+
+    def update_default_combo(self):
+        current_idx = self.default_ai_combo.currentIndex()
+        self.default_ai_combo.clear()
+        for frame in self.profile_widgets:
+            name = frame.data_widgets["name"].text()
+            self.default_ai_combo.addItem(name)
+        if current_idx >= 0 and current_idx < self.default_ai_combo.count():
+            self.default_ai_combo.setCurrentIndex(current_idx)
+
+    # ---- Xem trước (tab "Xem trước") ----
+
+    def _on_preview_selection_changed(self, current, previous):
+        if not current:
+            return
+        self._load_preview_file(current.data(Qt.UserRole))
+
+    def _load_preview_file(self, path):
+        if not path or not os.path.exists(path):
+            self.previewText.setPlainText("(Không tìm thấy tệp — có thể đã bị xóa hoặc di chuyển)")
+            self.previewFileLabel.setText("Không tìm thấy tệp")
+            return
+        try:
+            content = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            content = f"(Không thể đọc tệp: {e})"
+        self.previewText.setPlainText(content)
+        self.previewFileLabel.setText(Path(path).name)
+        self.last_preview_path = path
+
+    def _copy_preview_content(self):
+        QApplication.clipboard().setText(self.previewText.toPlainText())
+        self.statusBar().showMessage("Đã sao chép nội dung xem trước vào clipboard", 3000)
+
+    def _add_preview_entry(self, filename, path):
+        from PySide6.QtWidgets import QListWidgetItem
+        item = QListWidgetItem(filename)
+        item.setData(Qt.UserRole, path)
+        self.previewFileList.insertItem(0, item)
+        self.previewFileList.setCurrentItem(item)
+
+    # ---- Lịch sử (tab "Lịch sử") ----
+
+    def get_history_path(self):
+        return CONFIG_FILE.parent / "lich_su.json"
+
+    def load_history(self):
+        try:
+            path = self.get_history_path()
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    self.history = json.load(f)
+        except Exception:
+            self.history = []
+        self.refresh_history_table()
+
+    def save_history(self):
+        try:
+            with open(self.get_history_path(), "w", encoding="utf-8") as f:
+                json.dump(self.history[-500:], f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def on_file_processed(self, record):
+        """Slot nhận tín hiệu fileProcessed từ ConversionWorker sau mỗi tệp xử lý xong."""
+        self.history.append(record)
+        self.history = self.history[-500:]
+        self.save_history()
+        self.refresh_history_table()
+
+        if record.get("success") and record.get("preview_path"):
+            self._add_preview_entry(record["filename"], record["preview_path"])
+
+    def refresh_history_table(self):
+        if not hasattr(self, "historyTable"):
+            return
+        from PySide6.QtWidgets import QTableWidgetItem
+        rows = list(reversed(self.history))
+        self.historyTable.setRowCount(len(rows))
+        for i, rec in enumerate(rows):
+            status_text = "✓ Thành công" if rec.get("success") else "✗ Lỗi"
+            pii_counts = rec.get("pii_counts") or {}
+            pii_text = ", ".join(f"{label} ×{n}" for label, n in pii_counts.items()) if pii_counts else "—"
+            self.historyTable.setItem(i, 0, QTableWidgetItem(rec.get("filename", "")))
+            self.historyTable.setItem(i, 1, QTableWidgetItem(rec.get("timestamp", "")))
+            self.historyTable.setItem(i, 2, QTableWidgetItem(", ".join(rec.get("formats", []))))
+            self.historyTable.setItem(i, 3, QTableWidgetItem(status_text))
+            self.historyTable.setItem(i, 4, QTableWidgetItem(pii_text))
+
+    def export_history_csv(self):
+        if not self.history:
+            QMessageBox.information(self, "Lịch sử trống", "Chưa có dữ liệu lịch sử để xuất.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất báo cáo lịch sử", "lich_su_xu_ly.csv", "CSV (*.csv)")
+        if not path:
+            return
+        import csv
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Tên tệp", "Thời gian", "Định dạng", "Trạng thái", "PII đã ẩn"])
+                for rec in reversed(self.history):
+                    pii_counts = rec.get("pii_counts") or {}
+                    pii_text = ", ".join(f"{label} x{n}" for label, n in pii_counts.items()) if pii_counts else ""
+                    writer.writerow([
+                        rec.get("filename", ""),
+                        rec.get("timestamp", ""),
+                        ", ".join(rec.get("formats", [])),
+                        "Thành công" if rec.get("success") else "Lỗi",
+                        pii_text,
+                    ])
+            self.write_log(f"Đã xuất báo cáo lịch sử: {path}", "success")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Không thể xuất báo cáo: {e}")
 
     def toggle_theme(self):
         config = getattr(self, "app_config", {})
@@ -2260,6 +2390,16 @@ class MainWindow(QMainWindow):
         QTabBar::tab {{ padding: 8px 16px; background: {border_color}; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; color: {subtext_color}; }}
         QTabBar::tab:selected {{ background: {panel_bg}; border: 1px solid {border_color}; border-bottom: none; font-weight: bold; color: {primary_color}; }}
 
+        QTabWidget#mainTabs::pane {{ border: none; border-top: 1px solid {border_color}; }}
+        QTabWidget#mainTabs > QTabBar::tab {{ background: transparent; border: none; padding: 10px 16px; margin-right: 4px; color: {subtext_color}; font-weight: 600; font-size: 13px; border-bottom: 2.5px solid transparent; border-radius: 0; }}
+        QTabWidget#mainTabs > QTabBar::tab:selected {{ color: {primary_color}; border-bottom: 2.5px solid {primary_color}; font-weight: 700; }}
+        QTabWidget#mainTabs > QTabBar::tab:hover:!selected {{ color: {text_color}; }}
+
+        QPushButton#primaryBtn {{ background-color: {primary_color}; color: #ffffff; border: none; font-weight: bold; }}
+        QPushButton#primaryBtn:hover {{ background-color: {primary_hover}; }}
+        QPushButton#dangerBtn {{ color: {danger_text}; border-color: {danger_text}; }}
+        QPushButton#dangerBtn:hover {{ background-color: {danger_bg}; }}
+
         QMessageBox {{ background-color: {panel_bg}; }}
         QMessageBox QLabel {{ color: {text_color}; }}
         QMessageBox QPushButton {{ background-color: {primary_color}; color: #ffffff; border: none; border-radius: 4px; padding: 6px 16px; min-width: 60px; }}
@@ -2307,12 +2447,6 @@ class MainWindow(QMainWindow):
         self.write_log("Thư viện OpenDataLoader PDF yêu cầu Java để chuyển đổi tệp PDF thông thường.", "warning")
         return False
 
-
-    def open_settings(self):
-        dialog = SettingsDialog(self, getattr(self, "app_config", {}))
-        if dialog.exec():
-            self.save_config()
-            self.apply_config_ui()
 
     def get_active_ai_profile(self):
         config = getattr(self, "app_config", {})
@@ -2551,6 +2685,7 @@ class MainWindow(QMainWindow):
         self.worker.progress_detail.connect(self.update_progress_detail)
         self.worker.log.connect(self.write_log)
         self.worker.finished.connect(self.processing_finished)
+        self.worker.fileProcessed.connect(self.on_file_processed)
         self.worker.start()
 
     @Slot(bool, int)
@@ -2750,6 +2885,7 @@ class MainWindow(QMainWindow):
         self.worker.progress_detail.connect(self.update_progress_detail)
         self.worker.log.connect(self.write_log)
         self.worker.finished.connect(self.conversion_finished)
+        self.worker.fileProcessed.connect(self.on_file_processed)
         self.worker.start()
 
     @Slot(int)
@@ -2835,6 +2971,23 @@ class MainWindow(QMainWindow):
         try:
             if not hasattr(self, "app_config"):
                 self.app_config = {}
+
+            profiles = []
+            for i, frame in enumerate(getattr(self, "profile_widgets", [])):
+                w = frame.data_widgets
+                profiles.append({
+                    "id": f"profile_{i}",
+                    "name": w["name"].text(),
+                    "api_type": "gemini" if w["api_type"].currentIndex() == 0 else "openai",
+                    "base_url": w["base_url"].text(),
+                    "model": w["model"].text(),
+                    "api_key": w["api_key"].text(),
+                    "prompt": w["prompt"].toPlainText(),
+                    "headers": w["headers"].text()
+                })
+            active_idx = self.default_ai_combo.currentIndex() if hasattr(self, "default_ai_combo") else -1
+            active_id = profiles[active_idx]["id"] if profiles and 0 <= active_idx < len(profiles) else ""
+
             self.app_config.update({
                 "formats": {
                     "markdown": self.cbMarkdown.isChecked(),
@@ -2850,7 +3003,16 @@ class MainWindow(QMainWindow):
                 "window_size": {
                     "width": self.width(),
                     "height": self.height(),
-                }
+                },
+                "ai_profiles": profiles,
+                "active_ai_profile_id": active_id,
+                "ai_max_workers": self.ai_workers_spin.value() if hasattr(self, "ai_workers_spin") else self.app_config.get("ai_max_workers", 4),
+                "ai_timeout": self.ai_timeout_spin.value() if hasattr(self, "ai_timeout_spin") else self.app_config.get("ai_timeout", 120),
+                "ai_max_retries": self.ai_retries_spin.value() if hasattr(self, "ai_retries_spin") else self.app_config.get("ai_max_retries", 5),
+                "ui_settings": {
+                    "font_family": self.font_combo.currentFont().family() if hasattr(self, "font_combo") else self.app_config.get("ui_settings", {}).get("font_family", "Segoe UI"),
+                    "font_size": self.font_size.value() if hasattr(self, "font_size") else self.app_config.get("ui_settings", {}).get("font_size", 13),
+                },
             })
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.app_config, f, indent=2, ensure_ascii=False)
@@ -2861,12 +3023,12 @@ class MainWindow(QMainWindow):
         """Load user configuration from JSON file."""
         self.app_config = {}
         try:
-            if not CONFIG_FILE.exists():
-                return
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                self.app_config = json.load(f)
-                config = self.app_config
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    self.app_config = json.load(f)
                 self.apply_config_ui()
+
+            config = self.app_config
 
             formats = config.get("formats", {})
             self.cbMarkdown.setChecked(formats.get("markdown", True))
@@ -2888,9 +3050,40 @@ class MainWindow(QMainWindow):
             if hasattr(self, "cbRedactPii"):
                 self.cbRedactPii.setChecked(config.get("redact_pii", False))
 
+            # AI profiles (tab Cài đặt)
+            ai_profiles = config.get("ai_profiles", [])
+            if not ai_profiles:
+                ai_profiles = [{
+                    "id": "default",
+                    "name": "AI (Mặc định)",
+                    "api_type": "gemini",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                    "model": "gemini-2.5-flash",
+                    "api_key": "",
+                    "headers": "{}"
+                }]
+            for p in ai_profiles:
+                self.add_profile_ui(p)
+
+            active_idx = 0
+            active_id = config.get("active_ai_profile_id", "")
+            for i, p in enumerate(ai_profiles):
+                if p.get("id") == active_id:
+                    active_idx = i
+                    break
+            self.default_ai_combo.setCurrentIndex(active_idx)
+
+            self.ai_workers_spin.setValue(config.get("ai_max_workers", 4))
+            self.ai_timeout_spin.setValue(config.get("ai_timeout", 120))
+            self.ai_retries_spin.setValue(config.get("ai_max_retries", 5))
+
+            ui_set = config.get("ui_settings", {})
+            self.font_combo.setCurrentFont(QFont(ui_set.get("font_family", "Segoe UI")))
+            self.font_size.setValue(ui_set.get("font_size", 13))
+
             window_size = config.get("window_size", {})
-            w = window_size.get("width", 750)
-            h = window_size.get("height", 750)
+            w = window_size.get("width", 1280)
+            h = window_size.get("height", 800)
             self.resize(w, h)
             self.setup_styles()
         except Exception:

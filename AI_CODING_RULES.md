@@ -1,6 +1,6 @@
 # AI CODING RULES & WORKFLOW GUIDELINES
 
-Tệp này định nghĩa các quy tắc bắt buộc (Mandatory Rules) dành cho các Agent AI khi làm việc với dự án OpenDataLoader PDF.
+Tệp này định nghĩa các quy tắc bắt buộc (Mandatory Rules) dành cho các Agent AI khi làm việc với dự án LexGuard.
 
 ## 1. Context Retrieval (Lấy Context)
 Mỗi khi bắt đầu một phiên nói chuyện mới, AI **PHẢI** tự động sử dụng công cụ để đọc các tệp sau trước khi trả lời người dùng hoặc sửa code:
