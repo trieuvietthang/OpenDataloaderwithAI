@@ -12,6 +12,7 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 import subprocess
 import json
+import re
 import traceback
 import shutil
 import base64
@@ -97,6 +98,67 @@ def parse_page_range(range_str, max_pages):
                 pages.add(int(part) - 1)
             except: pass
     return pages
+
+PII_PLACEHOLDER = "[ĐÃ ẨN: {}]"
+
+# Tài liệu scan qua OCR hay bị rơi dấu ("Số tài khoản" -> "So tai khoan"). Từ khóa
+# ngữ cảnh vì vậy phải khớp được cả hai dạng, nếu không thông tin cá nhân sẽ lọt ra.
+_VN_CHAR_CLASSES = {
+    "a": "aàáảãạăằắẳẵặâầấẩẫậ",
+    "d": "dđ",
+    "e": "eèéẻẽẹêềếểễệ",
+    "i": "iìíỉĩị",
+    "o": "oòóỏõọôồốổỗộơờớởỡợ",
+    "u": "uùúủũụưừứửữự",
+    "y": "yỳýỷỹỵ",
+}
+
+def _vn_keyword(keyword):
+    """Biến từ khóa không dấu thành mẫu regex khớp được cả bản có dấu lẫn không dấu."""
+    parts = []
+    for ch in keyword:
+        if ch == " ":
+            parts.append(r"\s+")
+        elif ch in _VN_CHAR_CLASSES:
+            parts.append(f"[{_VN_CHAR_CLASSES[ch]}]")
+        else:
+            parts.append(re.escape(ch))
+    return "".join(parts)
+
+# (nhãn, mẫu regex, giữ lại tiền tố nhóm 1).
+# Thứ tự quan trọng: các mẫu có từ khóa ngữ cảnh và mẫu dài chạy trước, để dãy
+# số chung chung không "nuốt" mất chúng.
+# Ngày sinh / STK / MST / CMND chỉ ẩn khi có từ khóa ngữ cảnh đứng trước: nếu
+# bắt mọi dãy số thì ngày lập văn bản hay số tiền cũng bị ẩn nhầm.
+PII_PATTERNS = [
+    ("EMAIL", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]*\w"), False),
+    ("BIỂN SỐ", re.compile(r"\b\d{2}[A-Z]{1,2}\d?[-\s]\d{3}[.\s]?\d{1,2}\b"), False),
+    ("NGÀY SINH", re.compile(rf"(\b{_vn_keyword('sinh')}\b\D{{0,10}}?)(\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{4}})", re.IGNORECASE), True),
+    ("STK", re.compile(rf"((?:{_vn_keyword('so tai khoan')}|{_vn_keyword('tai khoan so')}|stk)\s*[:.]?\s*)(\d[\d\s.-]{{5,20}}\d)", re.IGNORECASE), True),
+    ("MST", re.compile(rf"((?:{_vn_keyword('ma so thue')}|mst)\s*[:.]?\s*)(\d[\d\s.-]{{7,16}}\d)", re.IGNORECASE), True),
+    ("CCCD", re.compile(rf"((?:cccd|{_vn_keyword('can cuoc cong dan')}|cmnd|cmt|{_vn_keyword('chung minh nhan dan')})\s*(?:{_vn_keyword('so')})?\s*[:.]?\s*)(\d[\d\s.-]{{6,16}}\d)", re.IGNORECASE), True),
+    ("CCCD", re.compile(r"\b\d{12}\b"), False),
+    ("SĐT", re.compile(r"(?<![\d+])(?:\+84|0)\d{2,3}[.\s-]\d{3,4}[.\s-]\d{3,4}\b"), False),
+    ("SĐT", re.compile(r"(?<![\d+])(?:\+84|0)\d{9}\b"), False),
+]
+
+def redact_pii(text):
+    """Thay thông tin định danh cá nhân bằng nhãn [ĐÃ ẨN: <loại>].
+
+    Trả về (văn_bản_đã_ẩn, {nhãn: số_lần_ẩn}).
+    """
+    if not text:
+        return text, {}
+
+    counts = {}
+    for label, pattern, keep_prefix in PII_PATTERNS:
+        def _replace(match, _label=label, _keep=keep_prefix):
+            counts[_label] = counts.get(_label, 0) + 1
+            placeholder = PII_PLACEHOLDER.format(_label)
+            return match.group(1) + placeholder if _keep else placeholder
+
+        text = pattern.sub(_replace, text)
+    return text, counts
 
 def get_config_path():
     app_config = APP_DIR / "config.json"
@@ -276,7 +338,7 @@ def validate_ai_profile(profile):
     except Exception as e:
         return False, f"Lỗi kết nối: {str(e)}"
 
-def ocr_page_with_ai(image_path, profile, max_retries=5, cancel_check=None, timeout=120, max_image_pixels=4000000):
+def ocr_page_with_ai(image_path, profile, max_retries=5, cancel_check=None, timeout=120, max_image_pixels=4000000, redact_pii_hint=False):
     """Sends document page image to AI API (Gemini or OpenAI-compatible)."""
     api_type = profile.get("api_type", "gemini")
     api_key = profile.get("api_key", "")
@@ -309,6 +371,11 @@ def ocr_page_with_ai(image_path, profile, max_retries=5, cancel_check=None, time
     prompt = profile.get("prompt", "").strip()
     if not prompt:
         prompt = default_prompt
+
+    # Regex không nhận ra họ tên và địa chỉ nhà, nên nhờ AI ẩn giúp hai loại này.
+    if redact_pii_hint:
+        prompt += ("\n\nQUAN TRỌNG: Thay họ tên người bằng nhãn [ĐÃ ẨN: HỌ TÊN] và địa chỉ nhà cụ thể "
+                   "bằng nhãn [ĐÃ ẨN: ĐỊA CHỈ]. Giữ nguyên toàn bộ nội dung còn lại, không tự thêm bớt.")
 
     headers = {"Content-Type": "application/json"}
     try:
@@ -895,8 +962,9 @@ class ConversionWorker(QThread):
     log = Signal(str, str)
     finished = Signal(bool, int)
 
-    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_deep_inpaint=False, use_contrast=True, dpi=300, ai_max_workers=4, ai_timeout=120, ai_max_retries=5):
+    def __init__(self, input_paths, formats, output_dir, ocr_mode="none", ai_profile=None, page_range="", pdf_password="", remove_watermark=False, use_pixel_filter=True, use_morphology=True, use_deep_inpaint=False, use_contrast=True, dpi=300, ai_max_workers=4, ai_timeout=120, ai_max_retries=5, redact_pii_enabled=False):
         super().__init__()
+        self.redact_pii_enabled = redact_pii_enabled
         self.input_paths = input_paths
         self.formats = formats
         self.output_dir = output_dir
@@ -918,6 +986,29 @@ class ConversionWorker(QThread):
     def cancel(self):
         """Request cancellation of the conversion process."""
         self._cancelled = True
+
+    def _redact(self, text):
+        """Ẩn thông tin định danh cá nhân nếu người dùng bật tùy chọn."""
+        if not self.redact_pii_enabled:
+            return text
+        redacted, counts = redact_pii(text)
+        if counts:
+            detail = ", ".join(f"{label} x{num}" for label, num in counts.items())
+            self.log.emit(f"  Đã ẩn thông tin cá nhân ({detail})", "success")
+        return redacted
+
+    def _redact_output_files(self, output_dir, base_name):
+        """Luồng Standard do thư viện ngoài ghi file, nên phải ẩn PII sau khi ghi."""
+        for out_file in Path(output_dir).glob(f"{base_name}.*"):
+            if out_file.suffix.lower() not in (".md", ".markdown", ".html", ".txt", ".json"):
+                continue
+            try:
+                content = out_file.read_text(encoding="utf-8")
+                redacted = self._redact(content)
+                if redacted != content:
+                    out_file.write_text(redacted, encoding="utf-8")
+            except Exception as e:
+                self.log.emit(f"  Không thể ẩn thông tin cá nhân trong {out_file.name}: {str(e)}", "warning")
 
     def _is_scanned_page(self, page):
         """
@@ -1329,7 +1420,7 @@ class ConversionWorker(QThread):
             base_name = file_path.stem
             out_path = Path(output_dir) / f"{base_name}.md"
             with open(out_path, "w", encoding="utf-8") as f:
-                f.write(markdown_output)
+                f.write(self._redact(markdown_output))
 
             # Docling may drop an assets folder next to the output; we inlined nothing
             assets_dir = Path(output_dir) / f"{base_name}_images"
@@ -1385,6 +1476,9 @@ class ConversionWorker(QThread):
                         self.log.emit(f"  Đã đổi tên: {out_file.name} -> {new_name}", "info")
                     except Exception as re_err:
                         self.log.emit(f"  Không thể đổi tên {out_file.name}: {str(re_err)}", "warning")
+
+            if self.redact_pii_enabled:
+                self._redact_output_files(output_dir, original_stem)
 
             self.log.emit(f"-> Thành công: Đã chuyển đổi {file_path.name}", "success")
             return True
@@ -1493,7 +1587,7 @@ class ConversionWorker(QThread):
                             )
                 elif self.ocr_mode == "gemini":
                     try:
-                        ocr_text = ocr_page_with_ai(str(img_path), self.ai_profile, max_retries=self.ai_max_retries, cancel_check=lambda: self._cancelled, timeout=self.ai_timeout)
+                        ocr_text = ocr_page_with_ai(str(img_path), self.ai_profile, max_retries=self.ai_max_retries, cancel_check=lambda: self._cancelled, timeout=self.ai_timeout, redact_pii_hint=self.redact_pii_enabled)
                         logs.append((f"    Trang {page_num + 1}: OCR AI thành công.", "success"))
                     except Exception as g_err:
                         local_error = 1
@@ -1582,7 +1676,7 @@ class ConversionWorker(QThread):
 
             # Combine content
             base_name = file_path.stem
-            full_markdown = f"# {base_name}\n\n" + "".join(markdown_content)
+            full_markdown = self._redact(f"# {base_name}\n\n" + "".join(markdown_content))
 
             # Write requested formats
             for fmt in self.formats:
@@ -1648,7 +1742,7 @@ class ConversionWorker(QThread):
         try:
             with open(file_path, "rb") as docx_file:
                 result = mammoth.convert_to_html(docx_file)
-                html_content = result.value
+                html_content = self._redact(result.value)
 
                 for warning in result.messages:
                     self.log.emit(f"Cảnh báo DOCX: {warning.message}", "warning")
@@ -1673,7 +1767,7 @@ class ConversionWorker(QThread):
                         docx_file.seek(0)
                         text_result = mammoth.extract_raw_text(docx_file)
                         with open(Path(output_dir) / f"{base_name}.txt", "w", encoding="utf-8") as f:
-                            f.write(text_result.value)
+                            f.write(self._redact(text_result.value))
                         self.log.emit(f"  Exported: {base_name}.txt", "info")
 
                     elif fmt == "json":
@@ -1684,7 +1778,7 @@ class ConversionWorker(QThread):
                         json_data = {
                             "file_name": file_path.name,
                             "file_type": "docx",
-                            "text": text_result.value,
+                            "text": self._redact(text_result.value),
                             "markdown": md_content,
                             "html": html_content
                         }
@@ -1980,6 +2074,15 @@ class MainWindow(QMainWindow):
         self.adv_watermark_frame.setVisible(False)
 
         config_layout.addLayout(watermark_layout, 6, 1)
+
+        # 8. PII Redaction
+        config_layout.addWidget(QLabel("<b>Bảo mật:</b>", self), 7, 0)
+        self.cbRedactPii = QCheckBox("Ẩn thông tin định danh cá nhân (CCCD, SĐT, email, STK...)", self)
+        self.cbRedactPii.setToolTip(
+            "Thay thông tin cá nhân trong file kết quả bằng nhãn [ĐÃ ẨN: ...].\n"
+            "Ở chế độ OCR Trí tuệ nhân tạo, AI sẽ ẩn thêm cả họ tên và địa chỉ."
+        )
+        config_layout.addWidget(self.cbRedactPii, 7, 1)
 
         main_layout.addWidget(config_frame)
 
@@ -2640,7 +2743,8 @@ class MainWindow(QMainWindow):
             dpi=getattr(self, "dpiSpin", None) and self.dpiSpin.value() or 300,
             ai_max_workers=self.app_config.get("ai_max_workers", 4),
             ai_timeout=self.app_config.get("ai_timeout", 120),
-            ai_max_retries=self.app_config.get("ai_max_retries", 5)
+            ai_max_retries=self.app_config.get("ai_max_retries", 5),
+            redact_pii_enabled=getattr(self, "cbRedactPii", None) and self.cbRedactPii.isChecked() or False
         )
         self.worker.progress.connect(self.update_progress)
         self.worker.progress_detail.connect(self.update_progress_detail)
@@ -2741,6 +2845,7 @@ class MainWindow(QMainWindow):
                 "ocr_mode": self.ocrCombo.currentIndex(),
                 "output_dir": self.outPathEdit.text(),
                 "page_range": getattr(self, "pageRangeEdit", None) and self.pageRangeEdit.text() or "",
+                "redact_pii": getattr(self, "cbRedactPii", None) and self.cbRedactPii.isChecked() or False,
                 "dark_mode": self.app_config.get("dark_mode", False),
                 "window_size": {
                     "width": self.width(),
@@ -2779,6 +2884,9 @@ class MainWindow(QMainWindow):
             if "page_range" in config and hasattr(self, "pageRangeEdit"):
                 page_range = config.get("page_range", "")
                 self.pageRangeEdit.setText(page_range)
+
+            if hasattr(self, "cbRedactPii"):
+                self.cbRedactPii.setChecked(config.get("redact_pii", False))
 
             window_size = config.get("window_size", {})
             w = window_size.get("width", 750)

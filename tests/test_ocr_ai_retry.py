@@ -154,6 +154,31 @@ def test_cancel_check_aborts_during_backoff_wait(sample_image, monkeypatch):
         ocr_page_with_ai(sample_image, GEMINI_PROFILE, max_retries=5, cancel_check=cancel_check)
 
 
+def _captured_prompt(sample_image, monkeypatch, **kwargs):
+    """Run one successful call and return the prompt text actually sent."""
+    sent = {}
+
+    def fake_urlopen(req, timeout=None):
+        sent["payload"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResponse(_gemini_payload("ok"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ocr_page_with_ai(sample_image, GEMINI_PROFILE, max_retries=1, **kwargs)
+    return sent["payload"]["contents"][0]["parts"][0]["text"]
+
+
+def test_pii_hint_appended_to_prompt_when_requested(sample_image, monkeypatch):
+    prompt = _captured_prompt(sample_image, monkeypatch, redact_pii_hint=True)
+    assert "[ĐÃ ẨN: HỌ TÊN]" in prompt
+    assert "[ĐÃ ẨN: ĐỊA CHỈ]" in prompt
+    assert "Markdown" in prompt  # chỉ dẫn gốc vẫn được giữ
+
+
+def test_prompt_unchanged_when_pii_hint_off(sample_image, monkeypatch):
+    prompt = _captured_prompt(sample_image, monkeypatch)
+    assert "ĐÃ ẨN" not in prompt
+
+
 def test_invalid_ai_response_shape_raises_clear_error(sample_image, monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen",

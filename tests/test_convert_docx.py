@@ -16,14 +16,16 @@ class _DummyLog:
 
 
 class _ConvertHost:
-    def __init__(self, formats):
+    def __init__(self, formats, redact_pii_enabled=False):
         self.formats = formats
+        self.redact_pii_enabled = redact_pii_enabled
         self.log = _DummyLog()
 
 
-def _make_host(formats):
-    host = _ConvertHost(formats)
+def _make_host(formats, redact_pii_enabled=False):
+    host = _ConvertHost(formats, redact_pii_enabled)
     host.convert_docx = ConversionWorker.convert_docx.__get__(host, _ConvertHost)
+    host._redact = ConversionWorker._redact.__get__(host, _ConvertHost)
     return host
 
 
@@ -71,6 +73,47 @@ def test_all_formats_write_expected_extensions(tmp_path, monkeypatch):
     assert json_content["file_type"] == "docx"
     assert json_content["text"] == "Hello World"
     assert json_content["markdown"] == "Hello **World**"
+
+
+class _PiiMammoth:
+    def convert_to_html(self, f):
+        return _FakeMammothResult("<p>Ông A, CCCD 079123456789, ĐT 0901234567</p>")
+
+    def extract_raw_text(self, f):
+        return _FakeMammothResult("Ông A, CCCD 079123456789, ĐT 0901234567")
+
+
+def test_pii_is_redacted_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(ol, "mammoth", _PiiMammoth())
+    monkeypatch.setattr(ol, "markdownify", _FakeMarkdownify())
+
+    docx_path = tmp_path / "hoso.docx"
+    docx_path.write_bytes(b"fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    host = _make_host(["html", "text"], redact_pii_enabled=True)
+    assert host.convert_docx(docx_path, out_dir) is True
+
+    for name in ("hoso.html", "hoso.txt"):
+        content = (out_dir / name).read_text(encoding="utf-8")
+        assert "079123456789" not in content
+        assert "0901234567" not in content
+        assert "[ĐÃ ẨN: CCCD]" in content
+
+
+def test_pii_left_intact_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(ol, "mammoth", _PiiMammoth())
+    monkeypatch.setattr(ol, "markdownify", _FakeMarkdownify())
+
+    docx_path = tmp_path / "hoso.docx"
+    docx_path.write_bytes(b"fake")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    host = _make_host(["text"], redact_pii_enabled=False)
+    assert host.convert_docx(docx_path, out_dir) is True
+    assert "079123456789" in (out_dir / "hoso.txt").read_text(encoding="utf-8")
 
 
 def test_returns_false_when_mammoth_not_installed(tmp_path, monkeypatch):
