@@ -4,6 +4,9 @@ __pycache__/
 build/
 dist/
 *.spec
+# LexGuard.spec has real, hard-won build fixes (bundling opendataloader_pdf's
+# jar, excluding the optional Docling/torch stack) — worth tracking.
+!LexGuard.spec
 *.log
 .env
 .venv

@@ -78,6 +78,10 @@ def get_app_dir():
 
 APP_DIR = get_app_dir()
 
+# Bản đóng gói (PyInstaller) không có Python/pip thật bên trong và không bundle
+# sẵn Docling+torch (~2GB) — chế độ Docling chỉ dùng được khi chạy từ mã nguồn.
+IS_FROZEN = getattr(sys, 'frozen', False)
+
 # Output format name -> file extension (the two differ for markdown/text)
 FORMAT_EXTENSIONS = {"markdown": "md", "text": "txt"}
 
@@ -1122,7 +1126,10 @@ class ConversionWorker(QThread):
             )
         except ImportError as e:
             self.log.emit(f"Lỗi: Docling chưa cài đặt. {e}", "error")
-            self.log.emit("Gợi ý: Bấm 'Cài đặt Docling' ở thanh cảnh báo để cài đặt tự động.", "warning")
+            if IS_FROZEN:
+                self.log.emit("Docling không khả dụng trong bản đóng gói di động — chạy từ mã nguồn Python để dùng chế độ này.", "warning")
+            else:
+                self.log.emit("Gợi ý: Bấm 'Cài đặt Docling' ở thanh cảnh báo để cài đặt tự động.", "warning")
             return False
 
         if pytesseract is None:
@@ -1704,14 +1711,26 @@ class MainWindow(QMainWindow):
         docling_banner_layout = QHBoxLayout(self.doclingWarningBanner)
         docling_banner_layout.setContentsMargins(10, 4, 10, 4)
 
-        self.doclingBannerLabel = QLabel("⚠️ Chưa tìm thấy Docling. Cài đặt tự động để sử dụng OCR AI ngoại tuyến với TableFormer?", self)
+        self.doclingBannerLabel = QLabel(self)
         self.doclingBannerLabel.setObjectName("infoText")
         docling_banner_layout.addWidget(self.doclingBannerLabel, stretch=4)
 
-        self.btnAutoInstallDocling = QPushButton("Cài đặt Docling", self)
+        self.btnAutoInstallDocling = QPushButton(self)
         self.btnAutoInstallDocling.setObjectName("installDoclingBtn")
-        self.btnAutoInstallDocling.clicked.connect(self.auto_install_docling)
         docling_banner_layout.addWidget(self.btnAutoInstallDocling, stretch=1)
+
+        if IS_FROZEN:
+            # Bản đóng gói di động không có môi trường Python/pip thật, và không
+            # bundle sẵn Docling+torch (~2GB) — không thể tự cài lẫn dùng được.
+            self.doclingBannerLabel.setText(
+                "⚠️ Chế độ Docling không khả dụng trong bản đóng gói di động (cần môi trường Python riêng ~2GB)."
+            )
+            self.btnAutoInstallDocling.setText("Xem hướng dẫn")
+            self.btnAutoInstallDocling.clicked.connect(self.show_docling_unavailable_guide)
+        else:
+            self.doclingBannerLabel.setText("⚠️ Chưa tìm thấy Docling. Cài đặt tự động để sử dụng OCR AI ngoại tuyến với TableFormer?")
+            self.btnAutoInstallDocling.setText("Cài đặt Docling")
+            self.btnAutoInstallDocling.clicked.connect(self.auto_install_docling)
 
         root_layout.addWidget(self.doclingWarningBanner)
         self.doclingWarningBanner.hide()
@@ -2596,6 +2615,17 @@ class MainWindow(QMainWindow):
         else:
             self.tessBannerLabel.setText("⚠️ Cài đặt Tesseract tự động thất bại.")
             QMessageBox.critical(self, "Lỗi cài đặt", "Không thể cài đặt Tesseract OCR tự động qua winget.")
+
+    def show_docling_unavailable_guide(self):
+        QMessageBox.information(
+            self, "Docling không khả dụng trong bản đóng gói",
+            "Chế độ Docling (OCR ngoại tuyến + TableFormer) cần thư viện Docling và PyTorch "
+            "(~2GB), không được đóng gói sẵn vào bản portable này để giữ dung lượng nhỏ gọn.\n\n"
+            "Để dùng chế độ này, vui lòng chạy ứng dụng trực tiếp từ mã nguồn Python "
+            "(xem README.md) rồi cài đặt: pip install docling\n\n"
+            "3 chế độ còn lại (Standard, Tesseract OCR, OCR Trí tuệ nhân tạo) hoạt động "
+            "đầy đủ trong bản đóng gói này."
+        )
 
     def auto_install_docling(self):
         self.btnAutoInstallDocling.setEnabled(False)
