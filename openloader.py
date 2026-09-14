@@ -177,6 +177,29 @@ def get_config_path():
 
 CONFIG_FILE = get_config_path()
 
+def get_writable_cache_dir(subfolder):
+    """Thư mục cache ghi được cho dữ liệu nặng (tessdata, model Docling).
+
+    Ưu tiên cạnh APP_DIR; nếu không ghi được (vd cài vào Program Files và chạy
+    với quyền người dùng thường) thì chuyển sang %LOCALAPPDATA% — đúng chuẩn cho
+    cache máy cục bộ dung lượng lớn (khác Roaming AppData mà config.json dùng).
+    """
+    candidate = APP_DIR / subfolder
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        test_file = candidate / ".test_write"
+        test_file.touch()
+        test_file.unlink()
+        return candidate
+    except (PermissionError, OSError):
+        local_app_data = Path(os.getenv('LOCALAPPDATA', Path.home()))
+        fallback = local_app_data / "LexGuard" / subfolder
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+DOCLING_MODELS_DIR = get_writable_cache_dir("docling_models")
+LOCAL_TESSDATA_DIR = get_writable_cache_dir("tessdata")
+
 
 def _get_startupinfo():
     """Returns a STARTUPINFO object to hide console windows on Windows."""
@@ -301,7 +324,7 @@ def check_tesseract_vietnamese():
         if sys_tessdata.exists() and (sys_tessdata / "vie.traineddata").exists():
             return True, str(sys_tessdata)
 
-    local_tessdata = APP_DIR / "tessdata"
+    local_tessdata = LOCAL_TESSDATA_DIR
     if local_tessdata.exists() and (local_tessdata / "vie.traineddata").exists():
         return True, str(local_tessdata)
 
@@ -1109,18 +1132,25 @@ class ConversionWorker(QThread):
                 return False
         self.log.emit(f"  Tessdata: {tessdata_dir}", "info")
 
-        # Only pin artifacts_path once models are actually present there;
-        # an empty dir makes Docling fail instead of auto-downloading.
-        artifacts_dir = APP_DIR / "docling_models"
-        os.makedirs(artifacts_dir, exist_ok=True)
+        # Tải model về DOCLING_MODELS_DIR một cách tường minh thay vì để artifacts_path=None
+        # (khiến Docling tự chọn cache ẩn ở nơi khác — làm has_local_models luôn thấy "trống"
+        # dù model đã có sẵn, và log báo "sẽ tải về" nhầm ở mọi lần chạy).
+        artifacts_dir = DOCLING_MODELS_DIR
         has_local_models = any(artifacts_dir.iterdir())
         if not has_local_models:
-            self.log.emit("  Chưa có mô hình cục bộ, Docling sẽ tự tải về (lần đầu có thể lâu).", "warning")
+            self.log.emit("  Chưa có mô hình cục bộ, đang tải về (chỉ xảy ra lần đầu tiên)...", "warning")
+            try:
+                from docling.utils.model_downloader import download_models
+                download_models(output_dir=artifacts_dir, progress=False)
+                self.log.emit("  Tải mô hình thành công. Từ lần sau sẽ không cần tải lại.", "success")
+            except Exception as dl_err:
+                self.log.emit(f"Lỗi: Không tải được mô hình Docling: {dl_err}", "error")
+                return False
 
         pipeline_options = PdfPipelineOptions(
             do_ocr=True,
             do_table_structure=True,
-            artifacts_path=str(artifacts_dir) if has_local_models else None
+            artifacts_path=str(artifacts_dir)
         )
         pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
 
@@ -2532,7 +2562,7 @@ class MainWindow(QMainWindow):
         self.tessBannerLabel.setText("⏳ Đang cài đặt Tesseract OCR... Vui lòng đồng ý với hộp thoại UAC (nếu xuất hiện).")
         self.write_log("Bắt đầu cài đặt Tesseract OCR và bộ tiếng Việt...", "info")
 
-        local_tessdata = APP_DIR / "tessdata"
+        local_tessdata = LOCAL_TESSDATA_DIR
         self.tesseract_installer_worker = TesseractInstallerWorker(str(local_tessdata))
         self.tesseract_installer_worker.progress.connect(self.write_log)
         self.tesseract_installer_worker.finished.connect(self.tesseract_install_finished)
@@ -2559,7 +2589,7 @@ class MainWindow(QMainWindow):
         self.doclingBannerLabel.setText("⏳ Đang cài đặt Docling và các mô hình AI... Vui lòng chờ, quá trình này có thể mất vài phút.")
         self.write_log("Bắt đầu cài đặt Docling (PyTorch CPU + TableFormer)...", "info")
 
-        artifacts_dir = APP_DIR / "docling_models"
+        artifacts_dir = DOCLING_MODELS_DIR
         self.docling_installer_worker = DoclingInstallerWorker(str(artifacts_dir))
         self.docling_installer_worker.progress.connect(self.write_log)
         self.docling_installer_worker.finished.connect(self.docling_install_finished)

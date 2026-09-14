@@ -13,6 +13,9 @@ env/
 # Runtime user config: holds live API keys, created by the app on first run.
 config.json
 
+# Runtime processing history, created by the app on first run.
+lich_su.json
+
 # OCR model caches downloaded at runtime
 docling_models/
 tessdata/
