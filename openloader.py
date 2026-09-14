@@ -79,6 +79,25 @@ APP_DIR = get_app_dir()
 # Output format name -> file extension (the two differ for markdown/text)
 FORMAT_EXTENSIONS = {"markdown": "md", "text": "txt"}
 
+def parse_page_range(range_str, max_pages):
+    """Parse a page-range string (e.g. '1-5, 10') into a set of 0-based page indices."""
+    if not range_str.strip():
+        return set(range(max_pages))
+    pages = set()
+    for part in range_str.split(","):
+        part = part.strip()
+        if not part: continue
+        if "-" in part:
+            try:
+                start, end = map(int, part.split("-"))
+                pages.update(range(max(0, start - 1), min(max_pages, end)))
+            except: pass
+        else:
+            try:
+                pages.add(int(part) - 1)
+            except: pass
+    return pages
+
 def get_config_path():
     app_config = APP_DIR / "config.json"
     try:
@@ -1418,24 +1437,6 @@ class ConversionWorker(QThread):
             doc = fitz.open(file_path)
             total_pages = len(doc)
             doc.close()
-
-            def parse_page_range(range_str, max_pages):
-                if not range_str.strip():
-                    return set(range(max_pages))
-                pages = set()
-                for part in range_str.split(","):
-                    part = part.strip()
-                    if not part: continue
-                    if "-" in part:
-                        try:
-                            start, end = map(int, part.split("-"))
-                            pages.update(range(max(0, start - 1), min(max_pages, end)))
-                        except: pass
-                    else:
-                        try:
-                            pages.add(int(part) - 1)
-                        except: pass
-                return pages
 
             target_pages = parse_page_range(getattr(self, "page_range", ""), total_pages)
             target_pages_list = [p for p in range(total_pages) if p in target_pages]

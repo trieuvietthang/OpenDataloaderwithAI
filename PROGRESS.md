@@ -50,3 +50,15 @@
 - [x] Bổ sung kịch bản tự động hóa Unit Test (PyTest) — hiện có `tests/` với 4 test PASS.
 - [x] **Cải thiện hiển thị thanh tiến độ xử lý trang song song (Multi-threading cho từng trang)**.
 - [x] Đóng gói lại thành file cài đặt `.exe` phiên bản V2 (OpenDataLoader_Setup_V2.1.exe).
+
+---
+
+## Giai đoạn tiếp theo: V2.2 (Backlog)
+
+Toàn bộ mục tiêu V2.1 ở trên đã hoàn thành. Backlog dưới đây là các hướng đã chốt với người dùng cho giai đoạn kế tiếp, xếp theo thứ tự ưu tiên đề xuất (nền tảng ổn định trước, tính năng mới sau):
+
+1. [x] **Mở rộng bộ test & CI**: Thêm test cho `parse_page_range`, retry/backoff của `ocr_page_with_ai` (mock HTTP), và `convert_docx` (format branching) — hiện có 25 test PASS. Đã thêm GitHub Actions (`.github/workflows/tests.yml`) chạy `pytest` tự động trên `windows-latest` mỗi lần push/PR vào `main`.
+2. [ ] **Tăng độ ổn định & test coverage sâu hơn**: Bổ sung test cho luồng Docling và Tesseract (mock subprocess/model calls), và các đường lỗi khi thiếu Java/Tesseract/model (thông báo lỗi rõ ràng thay vì crash).
+3. [ ] **Tái cấu trúc `openloader.py`**: Tách file ~2.800 dòng hiện tại thành các module riêng (vd: `ui/`, `workers/`, `ocr/`, `utils/`) để dễ bảo trì. Đây là thay đổi kiến trúc lớn — cần lên kế hoạch chi tiết (thứ tự tách, cách giữ tương thích `config.json`/import) và xác nhận với người dùng từng bước trước khi thực hiện, tránh phá vỡ chức năng đang chạy tốt (nguyên tắc "Do No Harm").
+4. [ ] **Tính năng: Xóa định danh cá nhân / dữ liệu nhạy cảm khi convert (PII Redaction)**: Cho phép người dùng chọn tự động phát hiện và xóa/ẩn các thông tin cá nhân nhạy cảm (tên, số CCCD/CMND, số điện thoại, địa chỉ...) trong nội dung trích xuất trước khi xuất file. Cần làm rõ thêm trước khi cài đặt: phạm vi nhận diện (regex theo mẫu VN vs. AI-based NER), áp dụng cho luồng nào (Standard/OCR/AI Vision), và hành vi mong muốn (xóa hẳn hay thay bằng placeholder như `[ĐÃ ẨN]`).
+5. [ ] **Tính năng mới khác cho người dùng**: Ví dụ xuất nhiều định dạng cùng lúc trong 1 lần chạy, khôi phục Preview ở dạng nhẹ (không chặn UI), auto-update, cải thiện installer (`installer.iss`).
