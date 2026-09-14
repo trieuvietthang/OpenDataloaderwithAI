@@ -58,7 +58,11 @@
 Toàn bộ mục tiêu V2.1 ở trên đã hoàn thành. Backlog dưới đây là các hướng đã chốt với người dùng cho giai đoạn kế tiếp, xếp theo thứ tự ưu tiên đề xuất (nền tảng ổn định trước, tính năng mới sau):
 
 1. [x] **Mở rộng bộ test & CI**: Thêm test cho `parse_page_range`, retry/backoff của `ocr_page_with_ai` (mock HTTP), và `convert_docx` (format branching) — hiện có 25 test PASS. Đã thêm GitHub Actions (`.github/workflows/tests.yml`) chạy `pytest` tự động trên `windows-latest` mỗi lần push/PR vào `main`.
-2. [ ] **Tăng độ ổn định & test coverage sâu hơn**: Bổ sung test cho luồng Docling và Tesseract (mock subprocess/model calls), và các đường lỗi khi thiếu Java/Tesseract/model (thông báo lỗi rõ ràng thay vì crash).
+2. [x] **Tăng độ ổn định & test coverage sâu hơn** (60 test PASS):
+   - **Đường lỗi thiếu phụ thuộc** (Kịch bản 2 trong `TESTING_SCENARIOS.md`): thiếu `opendataloader-pdf`, Java, PyMuPDF, `pytesseract`, binary Tesseract, hoặc Docling — tất cả đều phải trả về `False` kèm log lỗi đủ rõ để người dùng biết cần cài gì, không được crash.
+   - **Luồng Docling**: giả lập module Docling thay vì cài thật (nó kéo theo torch ~2GB). Nhờ vậy các đường lỗi này vẫn được kiểm tra trên CI thay vì bị skip, và bộ test chạy 2.4s thay vì 14.5s.
+   - **Chống tái diễn bug V2.1**: test cho trường hợp Docling trả kết quả rỗng (phải báo lỗi + gợi ý đổi chế độ, không để lại file rỗng) và cho việc dò `tessdata` tiếng Việt (ưu tiên tessdata hệ thống, sau đó thư mục cục bộ).
+   - **Kiểm tra PII trong luồng Docling**: xác nhận tùy chọn ẩn định danh hoạt động đúng ở luồng này.
 3. [ ] **Tái cấu trúc `openloader.py`**: Tách file ~2.800 dòng hiện tại thành các module riêng (vd: `ui/`, `workers/`, `ocr/`, `utils/`) để dễ bảo trì. Đây là thay đổi kiến trúc lớn — cần lên kế hoạch chi tiết (thứ tự tách, cách giữ tương thích `config.json`/import) và xác nhận với người dùng từng bước trước khi thực hiện, tránh phá vỡ chức năng đang chạy tốt (nguyên tắc "Do No Harm").
 4. [x] **Tính năng: Xóa định danh cá nhân khi convert (PII Redaction)**:
    - **Cách thay thế:** Thay bằng nhãn cho biết đã ẩn loại gì — `[ĐÃ ẨN: CCCD]`, `[ĐÃ ẨN: SĐT]`... giữ được ngữ cảnh tài liệu để rà soát lại.
