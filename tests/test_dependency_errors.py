@@ -190,6 +190,32 @@ def test_missing_vietnamese_data_returns_download_target(tmp_path, monkeypatch):
     assert tessdata_dir == str(local)
 
 
+# --- Dò cài đặt Docling KHÔNG import thật (chống treo UI) ---
+
+def test_is_docling_available_true_without_importing_document_converter():
+    """Bug thực tế (2026-09-14): chọn 'Docling' trong dropdown gọi
+    `from docling.document_converter import DocumentConverter` thật sự — kéo theo
+    torch/transformers và mất ~13s trên UI thread, làm treo cửa sổ. Phải dùng
+    find_spec (~0.1s), tuyệt đối không được thực sự import module con nặng đó."""
+    pytest.importorskip("docling", reason="Cần cài Docling thật để kiểm chứng không có heavy import")
+    sys.modules.pop("docling.document_converter", None)
+
+    assert ol.is_docling_available() is True
+    assert "docling.document_converter" not in sys.modules
+
+
+def test_is_docling_available_false_when_missing(monkeypatch):
+    monkeypatch.setattr(ol.importlib.util, "find_spec", lambda name: None)
+    assert ol.is_docling_available() is False
+
+
+def test_is_docling_available_false_when_package_not_found(monkeypatch):
+    def _raise(name):
+        raise ModuleNotFoundError(name)
+    monkeypatch.setattr(ol.importlib.util, "find_spec", _raise)
+    assert ol.is_docling_available() is False
+
+
 # --- Luồng Docling ---
 
 def test_docling_reports_missing_package_with_install_hint(pdf_path, tmp_path, monkeypatch):

@@ -17,6 +17,7 @@ import traceback
 import shutil
 import base64
 import time
+import importlib.util
 import urllib.request
 from pathlib import Path
 from datetime import datetime
@@ -315,6 +316,19 @@ def find_tesseract_path():
             return p
     return None
 
+
+def is_docling_available():
+    """Kiểm tra Docling đã cài đặt chưa, KHÔNG import thật.
+
+    `from docling.document_converter import DocumentConverter` kéo theo torch/
+    transformers và mất ~13 giây — gọi trên UI thread (vd. khi người dùng chọn
+    Docling trong dropdown) sẽ làm treo cửa sổ. `find_spec` chỉ dò module có tồn
+    tại hay không (~0.1 giây), không thực thi mã của module.
+    """
+    try:
+        return importlib.util.find_spec("docling.document_converter") is not None
+    except ImportError:
+        return False
 
 def check_tesseract_vietnamese():
     """Checks if Vietnamese training data is available in system or local directories."""
@@ -2509,10 +2523,9 @@ class MainWindow(QMainWindow):
             self.geminiKeyLabel.hide()
             self.geminiKeyEdit.hide()
             self.tessWarningBanner.hide()
-            try:
-                from docling.document_converter import DocumentConverter
+            if is_docling_available():
                 self.doclingWarningBanner.hide()
-            except ImportError:
+            else:
                 self.doclingWarningBanner.show()
         else:
             self.geminiKeyLabel.hide()

@@ -88,4 +88,9 @@ Toàn bộ mục tiêu V2.1 ở trên đã hoàn thành. Backlog dưới đây l
    - **Rủi ro phát hiện thêm:** `installer.iss` cài vào `Program Files` (cần quyền admin), trong khi `docling_models`/`tessdata` cũ ghi thẳng cạnh file `.exe` — không có cơ chế dự phòng như `config.json` đã có, dễ lỗi ghi file với người dùng không chạy quyền admin.
    - **Đã thêm `get_writable_cache_dir()`**: thử ghi cạnh `APP_DIR` trước, nếu không được (lỗi quyền) thì tự chuyển sang `%LOCALAPPDATA%\LexGuard\...` — áp dụng cho cả `docling_models` và `tessdata`. Dùng `%LOCALAPPDATA%` (không phải `%APPDATA%` như `config.json`) vì đây là cache máy cục bộ dung lượng lớn, không nên roaming.
    - 4 test mới xác minh: tải đúng thư mục khi trống, không tải lại khi đã có sẵn, và fallback đúng khi thư mục ứng dụng không ghi được.
-7. [ ] **Tính năng mới khác cho người dùng**: Ví dụ xuất nhiều định dạng cùng lúc trong 1 lần chạy (đã có sẵn), báo cáo tổng kết theo lô, auto-update, cải thiện installer (`installer.iss`).
+7. [x] **Fix treo UI ~13 giây khi chọn "Docling" trong dropdown** (báo lỗi thực tế từ người dùng, kèm hiện tượng con trỏ chuột "đang xử lý"):
+   - **Nguyên nhân:** `handle_ocr_mode_change()` chạy trên UI thread, gọi `from docling.document_converter import DocumentConverter` — một import THẬT, kéo theo toàn bộ torch/transformers. Đo trực tiếp: **13.02 giây**, so với việc chỉ cần biết "đã cài Docling chưa".
+   - **Khắc phục:** tách thành hàm `is_docling_available()` dùng `importlib.util.find_spec("docling.document_converter")` — chỉ dò module có tồn tại, không thực thi mã của nó. Đo lại: **0.17 giây**.
+   - Lưu ý: dòng log "Chưa có mô hình cục bộ, đang tải về (chỉ xảy ra lần đầu tiên)" lúc bấm CHUYỂN ĐỔI không phải lỗi — đó là mục 6 phía trên, chạy trong luồng nền (`ConversionWorker`) nên không treo UI, chỉ thật sự mất thời gian vì đang copy ~500MB lần đầu.
+   - 3 test mới, gồm 1 test dùng Docling thật (khi có cài trên máy dev) xác nhận `docling.document_converter` không bị import.
+8. [ ] **Tính năng mới khác cho người dùng**: Ví dụ xuất nhiều định dạng cùng lúc trong 1 lần chạy (đã có sẵn), báo cáo tổng kết theo lô, auto-update, cải thiện installer (`installer.iss`).
