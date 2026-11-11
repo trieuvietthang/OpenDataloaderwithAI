@@ -6,14 +6,15 @@ from PyInstaller.utils.hooks import collect_data_files
 # runtime via importlib.resources) — PyInstaller's static analysis only picks
 # up Python source, so the jar must be collected explicitly or "Standard" PDF
 # extraction silently fails on a machine that isn't the dev machine.
-datas = [('logo.png', '.')] + collect_data_files('opendataloader_pdf')
+# docling_runner.py is data, not an import: the app launches it with an external
+# Python that has Docling installed (the portable build cannot import Docling itself).
+datas = [('logo.png', '.'), ('docling_runner.py', '.')] + collect_data_files('opendataloader_pdf')
 
 # Docling is a deliberately optional, on-demand dependency (see IS_FROZEN in
-# openloader.py — the portable build tells users to run from source for it
-# instead of bundling it). If it happens to be pip-installed on the machine
-# doing the build (e.g. for local testing), PyInstaller's static analysis
-# still finds the `from docling... import ...` statements in openloader.py
-# and pulls in the whole stack — torch alone is ~370MB. Exclude it and its
+# openloader.py — the portable build runs it through an external Python via
+# docling_runner.py instead of bundling it). If it happens to be pip-installed
+# on the machine doing the build (e.g. for local testing), PyInstaller's static
+# analysis can still pull in the whole stack — torch alone is ~370MB. Exclude it and its
 # exclusive dependency tree explicitly so the portable build stays small
 # regardless of what's installed on the build machine.
 DOCLING_ECOSYSTEM_EXCLUDES = [

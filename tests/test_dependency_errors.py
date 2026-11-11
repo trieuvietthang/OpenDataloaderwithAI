@@ -4,8 +4,8 @@ Kịch bản 2 trong TESTING_SCENARIOS.md: phần mềm không được crash kh
 vắng mặt — phải trả về False và ghi log lỗi đủ rõ để người dùng biết cài gì.
 Các phụ thuộc này là binary/model nặng, nên chúng được giả lập ở biên import.
 """
+import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -190,187 +190,363 @@ def test_missing_vietnamese_data_returns_download_target(tmp_path, monkeypatch):
     assert tessdata_dir == str(local)
 
 
-# --- Dò cài đặt Docling KHÔNG import thật (chống treo UI) ---
+# --- Dò Python có Docling (Docling chạy ở tiến trình ngoài, xem docling_runner.py) ---
 
-def test_is_docling_available_true_without_importing_document_converter():
-    """Bug thực tế (2026-09-14): chọn 'Docling' trong dropdown gọi
-    `from docling.document_converter import DocumentConverter` thật sự — kéo theo
-    torch/transformers và mất ~13s trên UI thread, làm treo cửa sổ. Phải dùng
-    find_spec (~0.1s), tuyệt đối không được thực sự import module con nặng đó."""
-    pytest.importorskip("docling", reason="Cần cài Docling thật để kiểm chứng không có heavy import")
+@pytest.fixture(autouse=True)
+def _reset_docling_python_cache(monkeypatch):
+    monkeypatch.setattr(ol, "_docling_python_cache", None)
+
+
+def _fake_run(has_docling):
+    """subprocess.run giả: trả mã 0 cho các Python nằm trong tập `has_docling`."""
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0 if cmd[0] in has_docling else 1, b"", b"")
+    return run
+
+
+def test_python_has_docling_true_on_exit_zero(monkeypatch):
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run({"py_ok"}))
+    assert ol._python_has_docling("py_ok") is True
+
+
+def test_python_has_docling_false_when_module_missing(monkeypatch):
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run(set()))
+    assert ol._python_has_docling("py_no") is False
+
+
+@pytest.mark.parametrize("error", [
+    FileNotFoundError("python.exe đã bị gỡ"),
+    subprocess.TimeoutExpired("python", 30),
+])
+def test_python_has_docling_false_when_probe_cannot_run(monkeypatch, error):
+    """Python hỏng/treo không được làm crash việc dò — coi như không có Docling."""
+    def boom(*a, **k):
+        raise error
+    monkeypatch.setattr(ol.subprocess, "run", boom)
+    assert ol._python_has_docling("whatever") is False
+
+
+def test_probe_never_imports_docling_in_process(monkeypatch):
+    """Bug UI treo 13s (2026-09-14): import docling thật kéo theo torch. Giờ việc dò
+    chạy ở tiến trình khác nên module không bao giờ vào sys.modules của ứng dụng."""
     sys.modules.pop("docling.document_converter", None)
-
-    assert ol.is_docling_available() is True
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run({"py_ok"}))
+    ol._python_has_docling("py_ok")
     assert "docling.document_converter" not in sys.modules
 
 
-def test_is_docling_available_false_when_missing(monkeypatch):
-    monkeypatch.setattr(ol.importlib.util, "find_spec", lambda name: None)
-    assert ol.is_docling_available() is False
+def _fake_python_files(tmp_path, *names):
+    paths = []
+    for name in names:
+        exe = tmp_path / name / "python.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        paths.append(str(exe))
+    return paths
 
 
-def test_is_docling_available_false_when_package_not_found(monkeypatch):
-    def _raise(name):
-        raise ModuleNotFoundError(name)
-    monkeypatch.setattr(ol.importlib.util, "find_spec", _raise)
-    assert ol.is_docling_available() is False
+def test_find_docling_python_returns_first_python_that_has_it(tmp_path, monkeypatch):
+    a, b, c = _fake_python_files(tmp_path, "a", "b", "c")
+    monkeypatch.setattr(ol, "_python_candidates", lambda: [a, b, c])
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run({b, c}))
+
+    exe, checked = ol.find_docling_python()
+
+    assert exe == b
+    assert checked == [a, b]  # dừng ngay khi tìm thấy, không dò thừa c
 
 
-# --- Luồng Docling ---
+def test_find_docling_python_reports_what_it_checked_when_none_has_it(tmp_path, monkeypatch):
+    """Ca của người dùng: đã `pip install docling` nhưng vào nhầm Python khác — phải
+    biết app đã dò những Python nào để chỉ đúng chỗ cần cài."""
+    a, b = _fake_python_files(tmp_path, "a", "b")
+    monkeypatch.setattr(ol, "_python_candidates", lambda: [a, b])
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run(set()))
 
-def test_docling_reports_missing_package_with_install_hint(pdf_path, tmp_path, monkeypatch):
-    # Buộc ImportError kể cả khi docling đã cài trên máy dev (CI thì chưa cài)
-    monkeypatch.setitem(sys.modules, "docling", None)
-    monkeypatch.setitem(sys.modules, "docling.document_converter", None)
+    assert ol.find_docling_python() == (None, [a, b])
+
+
+def test_find_docling_python_caches_positive_result(tmp_path, monkeypatch):
+    (a,) = _fake_python_files(tmp_path, "a")
+    monkeypatch.setattr(ol, "_python_candidates", lambda: [a])
+    monkeypatch.setattr(ol.subprocess, "run", _fake_run({a}))
+    assert ol.find_docling_python()[0] == a
+
+    def must_not_probe(*args, **kwargs):
+        raise AssertionError("không được dò lại khi đã có kết quả cache")
+    monkeypatch.setattr(ol.subprocess, "run", must_not_probe)
+    assert ol.find_docling_python()[0] == a
+
+
+def test_python_candidates_env_override_first_and_deduped(tmp_path, monkeypatch):
+    (custom,) = _fake_python_files(tmp_path, "custom")
+    monkeypatch.setenv(ol.DOCLING_PYTHON_ENV_VAR, custom)
+    monkeypatch.setattr(ol, "IS_FROZEN", False)
+    monkeypatch.setattr(ol.shutil, "which", lambda name: custom if name == "python" else None)
+
+    found = ol._python_candidates()
+
+    assert found[0] == custom
+    assert found.count(custom) == 1
+
+
+def test_python_candidates_skip_frozen_exe_and_windows_store_stub(tmp_path, monkeypatch):
+    """Chạy lại chính LexGuard.exe như thể là Python sẽ mở thêm cửa sổ ứng dụng; chạy
+    stub WindowsApps\\python.exe sẽ bật cửa hàng Microsoft Store."""
+    (frozen_exe,) = _fake_python_files(tmp_path, "LexGuard")
+    stub = tmp_path / "WindowsApps" / "python.exe"
+    stub.parent.mkdir()
+    stub.write_bytes(b"")
+    monkeypatch.delenv(ol.DOCLING_PYTHON_ENV_VAR, raising=False)
+    monkeypatch.setattr(ol, "IS_FROZEN", True)
+    monkeypatch.setattr(ol.sys, "executable", frozen_exe)
+    monkeypatch.setattr(ol.shutil, "which", lambda name: {"python": str(stub), "py": None}.get(name))
+    monkeypatch.setenv(ol.DOCLING_PYTHON_ENV_VAR, frozen_exe)
+
+    found = ol._python_candidates()
+
+    assert frozen_exe not in found
+    assert str(stub) not in found
+
+
+def test_parse_py_launcher_listing_extracts_every_interpreter_path():
+    listing = (
+        " -V:3.13 *        C:\\Users\\Văn Thắng\\AppData\\Local\\Programs\\Python\\Python313\\python.exe\r\n"
+        " -V:3.11          C:\\Python311\\python.exe\r\n"
+        "No installed Pythons found!\r\n"
+    )
+    assert ol._parse_py_launcher_listing(listing) == [
+        "C:\\Users\\Văn Thắng\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+        "C:\\Python311\\python.exe",
+    ]
+
+
+def test_python_candidates_use_py_launcher_and_drop_nonexistent_paths(tmp_path, monkeypatch):
+    (py313,) = _fake_python_files(tmp_path, "Python313")
+    monkeypatch.delenv(ol.DOCLING_PYTHON_ENV_VAR, raising=False)
+    monkeypatch.setattr(ol, "IS_FROZEN", True)
+    monkeypatch.setattr(ol, "APP_DIR", tmp_path / "no_app_dir")
+    monkeypatch.setattr(ol.shutil, "which", lambda name: "py" if name == "py" else None)
+    monkeypatch.setattr(ol, "_parse_py_launcher_listing", lambda text: [py313, r"C:\Gone\python.exe"])
+    monkeypatch.setattr(
+        ol.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "listing", ""),
+    )
+
+    assert ol._python_candidates() == [py313]
+
+
+def test_docling_missing_hint_when_python_exists_but_lacks_docling():
+    hint = ol.docling_missing_hint([r"C:\Python313\python.exe"])
+    assert r'"C:\Python313\python.exe" -m pip install docling' in hint
+    assert ol.DOCLING_PYTHON_ENV_VAR in hint
+
+
+def test_docling_missing_hint_when_no_python_at_all():
+    hint = ol.docling_missing_hint([])
+    assert "python.org" in hint
+    assert "pip install docling" in hint
+
+
+def test_docling_subprocess_env_strips_pyinstaller_and_forces_utf8(monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "C:/bundle")
+    monkeypatch.setenv("PYTHONPATH", "C:/bundle/lib")
+    monkeypatch.setenv("_MEIPASS2", "C:/tmp/_MEI123")
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", "C:/tmp")
+
+    env = ol._docling_subprocess_env()
+
+    for key in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR"):
+        assert key not in env
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["TORCHDYNAMO_DISABLE"] == "1"
+
+
+# --- Luồng Docling (tiến trình runner được giả lập ở biên subprocess.Popen) ---
+
+class _FakePopen:
+    """Popen giả: phát lại các dòng stdout dựng sẵn và (tuỳ chọn) ghi file kết quả như runner thật."""
+    calls = []
+
+    def __init__(self, cmd, **kwargs):
+        type(self).calls.append((cmd, kwargs))
+        self.stdout = iter(type(self).lines)
+        self._exit = type(self).exit_code
+        if type(self).markdown is not None:
+            Path(cmd[3]).write_text(type(self).markdown, encoding="utf-8")
+
+    def wait(self):
+        return self._exit
+
+
+def _fake_runner(monkeypatch, lines=(), exit_code=0, markdown=None):
+    cls = type("FakePopen", (_FakePopen,), {"calls": [], "lines": list(lines),
+                                             "exit_code": exit_code, "markdown": markdown})
+    monkeypatch.setattr(ol.subprocess, "Popen", cls)
+    return cls
+
+
+def _ready_docling_env(monkeypatch, tmp_path):
+    """Có Python Docling, pytesseract, Tesseract + gói tiếng Việt — chỉ còn runner là giả."""
+    monkeypatch.setattr(ol, "find_docling_python", lambda: ("C:/py/python.exe", ["C:/py/python.exe"]))
+    monkeypatch.setattr(ol, "pytesseract", object())
+    monkeypatch.setattr(ol, "find_tesseract_path", lambda: "tesseract")
+    monkeypatch.setattr(ol, "check_tesseract_vietnamese", lambda: (True, str(tmp_path / "tessdata")))
+    monkeypatch.setattr(ol, "DOCLING_MODELS_DIR", tmp_path / "docling_models")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    return out_dir
+
+
+def test_docling_reports_missing_python_with_actionable_hint(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(ol, "IS_FROZEN", True)
+    monkeypatch.setattr(ol, "find_docling_python", lambda: (None, [r"C:\Python313\python.exe"]))
+    popen = _fake_runner(monkeypatch)
     host = _host(["convert_pdf_with_docling"])
 
     assert host.convert_pdf_with_docling(pdf_path, str(tmp_path)) is False
     assert any("Docling" in m for m in host.log.errors)
-    # Người dùng cuối cần biết bấm vào đâu để cài, không chỉ biết là thiếu
+    assert "pip install docling" in host.log.all_text
+    assert r"C:\Python313\python.exe" in host.log.all_text  # chỉ ra Python đã dò
+    assert popen.calls == []  # chưa có Python thì không được thử chạy runner
+
+
+def test_docling_source_run_still_points_to_install_button(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setattr(ol, "IS_FROZEN", False)
+    monkeypatch.setattr(ol, "find_docling_python", lambda: (None, []))
+    host = _host(["convert_pdf_with_docling"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(tmp_path)) is False
     assert "Cài đặt Docling" in host.log.all_text
 
 
-def _install_fake_docling(monkeypatch, markdown=""):
-    """Cho qua bước import Docling mà không cần cài thật (nó kéo theo torch ~2GB).
-
-    Nhờ vậy các đường lỗi phía sau vẫn được kiểm tra trên CI, thay vì bị skip.
-    Trả về danh sách các lần download_models() được gọi (output_dir mỗi lần),
-    để test xác minh model được tải đúng chỗ và không tải lại khi đã có sẵn.
-    """
-
-    class _Options:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-            self.table_structure_options = types.SimpleNamespace(mode=None)
-
-    class _FakeConverter:
-        def __init__(self, **kwargs):
-            pass
-
-        def convert(self, source):
-            document = types.SimpleNamespace(export_to_markdown=lambda **kw: markdown)
-            return types.SimpleNamespace(document=document)
-
-    converter_mod = types.ModuleType("docling.document_converter")
-    converter_mod.DocumentConverter = _FakeConverter
-    converter_mod.PdfFormatOption = _Options
-
-    base_models = types.ModuleType("docling.datamodel.base_models")
-    base_models.InputFormat = types.SimpleNamespace(PDF="pdf")
-
-    pipeline = types.ModuleType("docling.datamodel.pipeline_options")
-    pipeline.PdfPipelineOptions = _Options
-    pipeline.TesseractCliOcrOptions = _Options
-    pipeline.TableFormerMode = types.SimpleNamespace(ACCURATE="accurate")
-    pipeline.OcrMode = types.SimpleNamespace(FULL_PAGE="full_page")
-
-    download_calls = []
-
-    def _fake_download_models(output_dir=None, progress=False, **kwargs):
-        download_calls.append(Path(output_dir))
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        (Path(output_dir) / "downloaded_model.bin").write_bytes(b"fake")
-
-    downloader_mod = types.ModuleType("docling.utils.model_downloader")
-    downloader_mod.download_models = _fake_download_models
-
-    for name, module in [
-        ("docling", types.ModuleType("docling")),
-        ("docling.datamodel", types.ModuleType("docling.datamodel")),
-        ("docling.utils", types.ModuleType("docling.utils")),
-        ("docling.document_converter", converter_mod),
-        ("docling.datamodel.base_models", base_models),
-        ("docling.datamodel.pipeline_options", pipeline),
-        ("docling.utils.model_downloader", downloader_mod),
-    ]:
-        monkeypatch.setitem(sys.modules, name, module)
-
-    return download_calls
-
-
-def _ready_docling_env(monkeypatch, tmp_path, markdown):
-    """Giả lập môi trường Docling đã sẵn sàng để chạy tới bước xuất kết quả.
-
-    Model được coi như đã tải sẵn (thư mục không rỗng) để test này tập trung vào
-    xuất kết quả/redaction, không phải luồng tải model (đã có test riêng).
-    """
-    _install_fake_docling(monkeypatch, markdown=markdown)
-    monkeypatch.setattr(ol, "pytesseract", object())
-    monkeypatch.setattr(ol, "find_tesseract_path", lambda: "tesseract")
-    monkeypatch.setattr(ol, "check_tesseract_vietnamese", lambda: (True, str(tmp_path / "tessdata")))
-
-    models_dir = tmp_path / "docling_models"
-    models_dir.mkdir()
-    (models_dir / "dummy_model.bin").write_bytes(b"fake")
-    monkeypatch.setattr(ol, "DOCLING_MODELS_DIR", models_dir)
-
-
 def test_docling_reports_missing_tesseract_binary(pdf_path, tmp_path, monkeypatch):
-    _install_fake_docling(monkeypatch)
-    monkeypatch.setattr(ol, "pytesseract", object())
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
     monkeypatch.setattr(ol, "find_tesseract_path", lambda: None)
+    popen = _fake_runner(monkeypatch)
     host = _host(["convert_pdf_with_docling"])
 
-    assert host.convert_pdf_with_docling(pdf_path, str(tmp_path)) is False
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
     assert any("Tesseract" in m for m in host.log.errors)
+    assert popen.calls == []
 
 
 def test_docling_reports_missing_pytesseract(pdf_path, tmp_path, monkeypatch):
-    _install_fake_docling(monkeypatch)
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
     monkeypatch.setattr(ol, "pytesseract", None)
     host = _host(["convert_pdf_with_docling"])
 
-    assert host.convert_pdf_with_docling(pdf_path, str(tmp_path)) is False
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
     assert any("pytesseract" in m for m in host.log.errors)
 
 
-def test_docling_downloads_models_into_own_dir_when_empty(pdf_path, tmp_path, monkeypatch):
-    """Bug người dùng phát hiện: artifacts_path=None khiến Docling tự chọn cache ẩn
-    ở nơi khác, làm log luôn báo "sẽ tải về" dù model đã có sẵn. Giờ phải tải
-    tường minh vào DOCLING_MODELS_DIR."""
-    download_calls = _install_fake_docling(monkeypatch, markdown="# Nội dung đủ dài để vượt ngưỡng kiểm tra rỗng ở đây.")
-    monkeypatch.setattr(ol, "pytesseract", object())
-    monkeypatch.setattr(ol, "find_tesseract_path", lambda: "tesseract")
-    monkeypatch.setattr(ol, "check_tesseract_vietnamese", lambda: (True, str(tmp_path / "tessdata")))
+def test_docling_fails_cleanly_when_vietnamese_pack_cannot_be_downloaded(pdf_path, tmp_path, monkeypatch):
+    """Mất mạng lúc tải vie.traineddata: báo lỗi rõ, không chạy runner với dữ liệu thiếu."""
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(ol, "check_tesseract_vietnamese", lambda: (False, str(tmp_path / "tessdata")))
 
-    models_dir = tmp_path / "docling_models"
-    models_dir.mkdir()  # thư mục tồn tại (giống DOCLING_MODELS_DIR thật) nhưng trống
-    monkeypatch.setattr(ol, "DOCLING_MODELS_DIR", models_dir)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    host = _host(["convert_pdf_with_docling", "_redact"])
+    def offline(url, dest):
+        raise OSError("Network is unreachable")
+    monkeypatch.setattr(ol.urllib.request, "urlretrieve", offline)
+    popen = _fake_runner(monkeypatch)
+    host = _host(["convert_pdf_with_docling"])
 
-    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is True
-    assert download_calls == [models_dir]
-    assert (models_dir / "downloaded_model.bin").exists()
-    assert any("tải" in m.lower() for m in host.log.all_text.splitlines())
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert any("tiếng Việt" in m for m in host.log.errors)
+    assert popen.calls == []
 
 
-def test_docling_does_not_redownload_when_models_already_cached(pdf_path, tmp_path, monkeypatch):
-    """Khi model đã có sẵn trong DOCLING_MODELS_DIR, không được gọi tải lại."""
-    download_calls = _install_fake_docling(monkeypatch, markdown="# Nội dung đủ dài để vượt ngưỡng kiểm tra rỗng ở đây.")
-    monkeypatch.setattr(ol, "pytesseract", object())
-    monkeypatch.setattr(ol, "find_tesseract_path", lambda: "tesseract")
-    monkeypatch.setattr(ol, "check_tesseract_vietnamese", lambda: (True, str(tmp_path / "tessdata")))
-
-    models_dir = tmp_path / "docling_models"
-    models_dir.mkdir()
-    (models_dir / "already_here.bin").write_bytes(b"fake")
-    monkeypatch.setattr(ol, "DOCLING_MODELS_DIR", models_dir)
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    host = _host(["convert_pdf_with_docling", "_redact"])
+def test_docling_passes_explicit_paths_to_runner(pdf_path, tmp_path, monkeypatch):
+    """Runner phải nhận đúng Python, tessdata, thư mục model, lệnh Tesseract — thiếu
+    tessdata thì Docling mặc định sang fra/deu/spa/eng và mất tiếng Việt."""
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    popen = _fake_runner(monkeypatch, markdown="# Biên bản\n\nNội dung tài liệu đủ dài để vượt ngưỡng kiểm tra rỗng.")
+    host = _host(["convert_pdf_with_docling", "_redact", "_run_docling_runner"])
 
     assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is True
-    assert download_calls == []  # không được tải lại
+
+    cmd, kwargs = popen.calls[0]
+    assert cmd[0] == "C:/py/python.exe"
+    assert cmd[1] == str(ol.DOCLING_RUNNER)
+    assert cmd[2] == str(pdf_path)
+    assert cmd[cmd.index("--models-dir") + 1] == str(tmp_path / "docling_models")
+    assert cmd[cmd.index("--tessdata-dir") + 1] == str(tmp_path / "tessdata")
+    assert cmd[cmd.index("--tesseract-cmd") + 1] == "tesseract"
+    assert kwargs["env"]["PYTHONUTF8"] == "1"
+    assert kwargs["encoding"] == "utf-8"
+    assert ol.DOCLING_RUNNER.is_file()
+
+
+def test_docling_relays_runner_log_lines(pdf_path, tmp_path, monkeypatch):
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(
+        monkeypatch,
+        lines=["LOG|warning|  Chưa có mô hình cục bộ, đang tải về\n",
+               "noise không theo giao thức\n",
+               "LOG|success|  Tải mô hình thành công\n"],
+        markdown="# Biên bản\n\nNội dung tài liệu đủ dài để vượt ngưỡng kiểm tra rỗng.",
+    )
+    host = _host(["convert_pdf_with_docling", "_redact", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is True
+    assert ("  Chưa có mô hình cục bộ, đang tải về", "warning") in host.log.entries
+    assert ("  Tải mô hình thành công", "success") in host.log.entries
+    assert "noise" not in host.log.all_text
+
+
+def test_docling_runner_import_failure_invalidates_cache(pdf_path, tmp_path, monkeypatch):
+    """Exit 2 = Python đã dò được nhưng giờ không import nổi Docling (vd. vừa gỡ):
+    phải quên cache để lần sau dò lại thay vì cứ chọn mãi Python hỏng đó."""
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(ol, "_docling_python_cache", "C:/py/python.exe")
+    _fake_runner(monkeypatch, lines=["LOG|error|không import được Docling: DLL load failed\n"], exit_code=2)
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert any("DLL load failed" in m for m in host.log.errors)
+    assert ol._docling_python_cache is None
+
+
+def test_docling_model_download_failure_is_reported_once(pdf_path, tmp_path, monkeypatch):
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, lines=["LOG|error|Lỗi: Không tải được mô hình Docling: offline\n"], exit_code=3)
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert len(host.log.errors) == 1
+    assert "Không tải được mô hình" in host.log.errors[0]
+
+
+def test_docling_runner_crash_surfaces_last_output(pdf_path, tmp_path, monkeypatch):
+    """Runner chết đột ngột (thiếu RAM, DLL torch lỗi) mà không kịp báo theo giao thức:
+    phải cho người dùng thấy vài dòng cuối thay vì chỉ 'thất bại'."""
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, lines=["Traceback (most recent call last):\n", "MemoryError\n"], exit_code=1)
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert any("MemoryError" in m and "mã thoát 1" in m for m in host.log.errors)
+    assert list(out_dir.iterdir()) == []
+
+
+def test_docling_popen_oserror_is_reported_not_raised(pdf_path, tmp_path, monkeypatch):
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+
+    def boom(*a, **k):
+        raise PermissionError("Access is denied")
+    monkeypatch.setattr(ol.subprocess, "Popen", boom)
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert any("Access is denied" in m for m in host.log.errors)
 
 
 def test_docling_reports_empty_result_and_suggests_other_modes(pdf_path, tmp_path, monkeypatch):
     """Bug cũ ở V2.1: Docling trả kết quả rỗng mà vẫn xuất file trống."""
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    _ready_docling_env(monkeypatch, tmp_path, markdown="")
-    host = _host(["convert_pdf_with_docling"])
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, markdown="")
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
 
     assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
     assert any("rỗng" in m for m in host.log.errors)
@@ -378,27 +554,28 @@ def test_docling_reports_empty_result_and_suggests_other_modes(pdf_path, tmp_pat
     assert list(out_dir.iterdir()) == []  # không để lại file rỗng
 
 
+def test_docling_runner_reports_ok_but_writes_no_file(pdf_path, tmp_path, monkeypatch):
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, markdown=None, exit_code=0)
+    host = _host(["convert_pdf_with_docling", "_run_docling_runner"])
+
+    assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is False
+    assert any("không đọc được kết quả" in m for m in host.log.errors)
+
+
 def test_docling_writes_markdown_output(pdf_path, tmp_path, monkeypatch):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    _ready_docling_env(
-        monkeypatch, tmp_path,
-        markdown="# Biên bản\n\nNội dung tài liệu đủ dài để vượt ngưỡng kiểm tra rỗng.",
-    )
-    host = _host(["convert_pdf_with_docling", "_redact"])
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, markdown="# Biên bản\n\nNội dung tài liệu đủ dài để vượt ngưỡng kiểm tra rỗng.")
+    host = _host(["convert_pdf_with_docling", "_redact", "_run_docling_runner"])
 
     assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is True
     assert (out_dir / "hoso.md").read_text(encoding="utf-8").startswith("# Biên bản")
 
 
 def test_docling_output_is_redacted_when_enabled(pdf_path, tmp_path, monkeypatch):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    _ready_docling_env(
-        monkeypatch, tmp_path,
-        markdown="# Biên bản\n\nÔng A, CCCD số 079123456789, điện thoại 0901234567.",
-    )
-    host = _host(["convert_pdf_with_docling", "_redact"], redact_pii_enabled=True)
+    out_dir = _ready_docling_env(monkeypatch, tmp_path)
+    _fake_runner(monkeypatch, markdown="# Biên bản\n\nÔng A, CCCD số 079123456789, điện thoại 0901234567.")
+    host = _host(["convert_pdf_with_docling", "_redact", "_run_docling_runner"], redact_pii_enabled=True)
 
     assert host.convert_pdf_with_docling(pdf_path, str(out_dir)) is True
     written = (out_dir / "hoso.md").read_text(encoding="utf-8")

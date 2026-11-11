@@ -27,7 +27,7 @@
 ### Architecture & Tech Stack
 - **Framework**: `PySide6` (Qt for Python)
 - **Core Dependencies**: `PyMuPDF` (fitz), `pytesseract`, `Pillow`, `mammoth`, `markdownify`, `markdown`
-- **Optional**: `docling` (structure-aware offline OCR; auto-downloads its models on first use)
+- **Optional**: `docling` (structure-aware offline OCR; auto-downloads its models on first use). It runs in a separate Python process (`docling_runner.py`), so the portable `.exe` can use it too: install Python 3.10–3.13 and run `python -m pip install docling` — LexGuard finds that Python automatically (no restart needed). If it picks the wrong one, set the `LEXGUARD_DOCLING_PYTHON` environment variable to the full path of the `python.exe` that has Docling.
 - **Concurrency**: `QThread` based background processing (`ConversionWorker`) to keep the UI responsive during heavy OCR/API tasks.
 
 ---
@@ -55,7 +55,7 @@
 ### Kiến trúc & Công nghệ
 - **Nền tảng giao diện**: `PySide6`
 - **Thư viện lõi**: `PyMuPDF` (fitz), `pytesseract`, `Pillow`, `mammoth`, `markdownify`, `markdown`
-- **Tùy chọn**: `docling` (OCR ngoại tuyến hiểu cấu trúc; tự động tải model trong lần sử dụng đầu tiên)
+- **Tùy chọn**: `docling` (OCR ngoại tuyến hiểu cấu trúc; tự động tải model trong lần sử dụng đầu tiên). Docling chạy trong tiến trình Python riêng (`docling_runner.py`) nên bản `.exe` portable cũng dùng được: cài Python 3.10–3.13 rồi chạy `python -m pip install docling` — LexGuard tự dò Python đó (không cần khởi động lại). Nếu dò nhầm, đặt biến môi trường `LEXGUARD_DOCLING_PYTHON` = đường dẫn đầy đủ tới `python.exe` đã cài Docling.
 - **Xử lý đa luồng**: Ứng dụng mô hình `QThread` (`ConversionWorker`) để xử lý các tác vụ nặng (OCR, gọi API) dưới nền, đảm bảo giao diện phần mềm luôn mượt mà.
 
 ---

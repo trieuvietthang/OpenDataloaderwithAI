@@ -17,7 +17,7 @@ import traceback
 import shutil
 import base64
 import time
-import importlib.util
+import tempfile
 import urllib.request
 from pathlib import Path
 from datetime import datetime
@@ -321,18 +321,120 @@ def find_tesseract_path():
     return None
 
 
-def is_docling_available():
-    """Kiểm tra Docling đã cài đặt chưa, KHÔNG import thật.
+# Docling chạy trong tiến trình Python riêng (docling_runner.py) thay vì import vào
+# ứng dụng: bản .exe đóng gói không thể import thư viện từ Python bên ngoài, và việc
+# import torch (~13s) ngay trong ứng dụng từng làm treo UI.
+DOCLING_RUNNER = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "docling_runner.py"
+DOCLING_PYTHON_ENV_VAR = "LEXGUARD_DOCLING_PYTHON"
 
-    `from docling.document_converter import DocumentConverter` kéo theo torch/
-    transformers và mất ~13 giây — gọi trên UI thread (vd. khi người dùng chọn
-    Docling trong dropdown) sẽ làm treo cửa sổ. `find_spec` chỉ dò module có tồn
-    tại hay không (~0.1 giây), không thực thi mã của module.
-    """
+_docling_python_cache = None
+
+
+def _docling_subprocess_env():
+    """Môi trường sạch cho Python con: bỏ biến của PyInstaller/Python nhúng làm
+    Python ngoài nạp nhầm thư viện của .exe, và ép UTF-8 để log tiếng Việt không vỡ."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("PYTHONHOME", "PYTHONPATH", "_MEIPASS2") and not k.startswith("_PYI")
+    }
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", TORCHDYNAMO_DISABLE="1")
+    return env
+
+
+def _parse_py_launcher_listing(text):
+    """Lấy đường dẫn python.exe từ đầu ra của `py -0p` (mỗi dòng: ` -V:3.13 *   C:\\...\\python.exe`)."""
+    return re.findall(r"([A-Za-z]:\\.*?python\.exe)\s*$", text, re.MULTILINE)
+
+
+def _python_candidates():
+    """Các Python có thể đã cài Docling, theo thứ tự ưu tiên, đã bỏ trùng."""
+    found = []
+
+    override = os.environ.get(DOCLING_PYTHON_ENV_VAR)
+    if override:
+        found.append(override)
+
+    if not IS_FROZEN:
+        found.append(sys.executable)  # chạy từ mã nguồn: Python hiện tại là ứng viên số 1
+
+    exe_name = "python.exe" if os.name == "nt" else "python3"
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    found.append(str(APP_DIR / "docling_env" / scripts / exe_name))  # venv riêng cạnh ứng dụng
+
+    py_launcher = shutil.which("py")
+    if py_launcher:
+        try:
+            out = subprocess.run([py_launcher, "-0p"], capture_output=True, text=True, errors="replace", timeout=10,
+                                 startupinfo=_get_startupinfo()).stdout
+            found += _parse_py_launcher_listing(out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    for name in ("python", "python3"):
+        resolved = shutil.which(name)
+        if resolved:
+            found.append(resolved)
+
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        found += sorted(str(p) for p in (Path(local) / "Programs" / "Python").glob("Python*/python.exe"))
+
+    unique, seen = [], set()
+    for exe in found:
+        key = os.path.normcase(os.path.realpath(exe))  # realpath: python/python3 thường là symlink cùng một file
+        # `...\WindowsApps\python.exe` là stub của Microsoft Store: chạy nó sẽ bật cửa sổ Store
+        if key in seen or os.path.basename(os.path.dirname(os.path.abspath(exe))).lower() == "windowsapps":
+            continue
+        if IS_FROZEN and key == os.path.normcase(os.path.realpath(sys.executable)):
+            continue  # chính file .exe này không phải một trình thông dịch Python
+        if os.path.isfile(exe):
+            seen.add(key)
+            unique.append(exe)
+    return unique
+
+
+def _python_has_docling(python_exe):
+    # Chỉ dò module có tồn tại (find_spec), không import: import thật kéo theo torch.
+    probe = "import importlib.util as u,sys;sys.exit(0 if u.find_spec('docling.document_converter') else 1)"
     try:
-        return importlib.util.find_spec("docling.document_converter") is not None
-    except ImportError:
+        return subprocess.run([python_exe, "-c", probe], capture_output=True, timeout=30,
+                              env=_docling_subprocess_env(), startupinfo=_get_startupinfo()).returncode == 0
+    except (OSError, subprocess.SubprocessError):
         return False
+
+
+def find_docling_python():
+    """Tìm Python đã cài Docling. Trả về (đường_dẫn | None, danh_sách_Python_đã_dò).
+
+    Danh sách đã dò giúp báo lỗi đúng chỗ: "có Python nhưng chưa cài docling" khác
+    hẳn "không có Python nào" (vd. `pip install` vào nhầm Python khác trên máy).
+    Chạy subprocess nên gọi từ luồng nền, không gọi trên UI thread.
+    """
+    global _docling_python_cache
+    if _docling_python_cache and os.path.isfile(_docling_python_cache):
+        return _docling_python_cache, [_docling_python_cache]
+    checked = []
+    for exe in _python_candidates():
+        checked.append(exe)
+        if _python_has_docling(exe):
+            _docling_python_cache = exe
+            return exe, checked
+    return None, checked
+
+
+def docling_missing_hint(checked):
+    """Hướng dẫn người dùng cuối bước tiếp theo, tùy tình trạng Python trên máy."""
+    if checked:
+        return (
+            "Đã dò các Python sau nhưng chưa có Docling:\n  " + "\n  ".join(checked) +
+            f'\nCài vào một trong số đó, ví dụ: "{checked[0]}" -m pip install docling\n'
+            f"Hoặc đặt biến môi trường {DOCLING_PYTHON_ENV_VAR} = đường dẫn python.exe đã cài Docling."
+        )
+    return (
+        "Không tìm thấy Python nào trên máy. Cài Python 3.10–3.13 (python.org), "
+        "rồi chạy: python -m pip install docling\n"
+        f"Hoặc đặt biến môi trường {DOCLING_PYTHON_ENV_VAR} = đường dẫn python.exe đã cài Docling."
+    )
 
 def check_tesseract_vietnamese():
     """Checks if Vietnamese training data is available in system or local directories."""
@@ -614,6 +716,14 @@ class JavaInstallerWorker(QThread):
         except Exception as e:
             self.progress.emit(f"Lỗi khi chạy lệnh winget: {str(e)}", "error")
             self.finished.emit(False)
+
+
+class DoclingProbeWorker(QThread):
+    """Dò Python có Docling ở luồng nền (mỗi ứng viên là một subprocess, không được chạy trên UI thread)."""
+    done = Signal(object, object)  # (python_exe | None, danh_sách_đã_dò)
+
+    def run(self):
+        self.done.emit(*find_docling_python())
 
 
 class DoclingInstallerWorker(QThread):
@@ -1115,27 +1225,27 @@ class ConversionWorker(QThread):
         self.finished.emit(success_count == total_files, success_count)
 
     def convert_pdf_with_docling(self, file_path, output_dir):
-        """Offline AI OCR using Docling with Tesseract engine + TableFormer for tables."""
+        """Offline AI OCR using Docling with Tesseract engine + TableFormer for tables.
+
+        Docling chạy trong tiến trình Python riêng (docling_runner.py) — xem
+        find_docling_python() — nên dùng được cả từ bản .exe đóng gói.
+        """
         self.log.emit("-> Khởi chạy Docling OCR (Offline AI + TableFormer)...", "info")
 
-        try:
-            from docling.document_converter import DocumentConverter, PdfFormatOption
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import (
-                PdfPipelineOptions, TableFormerMode, TesseractCliOcrOptions, OcrMode
-            )
-        except ImportError as e:
-            self.log.emit(f"Lỗi: Docling chưa cài đặt. {e}", "error")
-            if IS_FROZEN:
-                self.log.emit("Docling không khả dụng trong bản đóng gói di động — chạy từ mã nguồn Python để dùng chế độ này.", "warning")
-            else:
+        python_exe, checked = find_docling_python()
+        if not python_exe:
+            self.log.emit("Lỗi: Không tìm thấy Python nào đã cài Docling.", "error")
+            self.log.emit(docling_missing_hint(checked), "warning")
+            if not IS_FROZEN:
                 self.log.emit("Gợi ý: Bấm 'Cài đặt Docling' ở thanh cảnh báo để cài đặt tự động.", "warning")
             return False
+        self.log.emit(f"  Python Docling: {python_exe}", "info")
 
         if pytesseract is None:
             self.log.emit("Lỗi: Thư viện 'pytesseract' chưa được cài đặt.", "error")
             return False
-        if not find_tesseract_path():
+        tesseract_cmd = find_tesseract_path()
+        if not tesseract_cmd:
             self.log.emit("Lỗi: Chưa cài đặt Tesseract OCR. Docling dùng Tesseract làm engine nhận dạng.", "error")
             return False
 
@@ -1153,79 +1263,68 @@ class ConversionWorker(QThread):
                 return False
         self.log.emit(f"  Tessdata: {tessdata_dir}", "info")
 
-        # Tải model về DOCLING_MODELS_DIR một cách tường minh thay vì để artifacts_path=None
-        # (khiến Docling tự chọn cache ẩn ở nơi khác — làm has_local_models luôn thấy "trống"
-        # dù model đã có sẵn, và log báo "sẽ tải về" nhầm ở mọi lần chạy).
-        artifacts_dir = DOCLING_MODELS_DIR
-        has_local_models = any(artifacts_dir.iterdir())
-        if not has_local_models:
-            self.log.emit("  Chưa có mô hình cục bộ, đang tải về (chỉ xảy ra lần đầu tiên)...", "warning")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raw_md = Path(tmp_dir) / "docling_out.md"
+            cmd = [python_exe, str(DOCLING_RUNNER), str(file_path), str(raw_md),
+                   "--models-dir", str(DOCLING_MODELS_DIR),
+                   "--tessdata-dir", str(tessdata_dir),
+                   "--tesseract-cmd", str(tesseract_cmd)]
+            exit_code, tail = self._run_docling_runner(cmd)
+
+            if exit_code == 2:
+                global _docling_python_cache
+                _docling_python_cache = None  # Docling có thể vừa bị gỡ: dò lại lần sau
+                return False
+            if exit_code != 0:
+                if exit_code != 3:  # mã 3 (tải model lỗi) runner đã tự báo rõ
+                    self.log.emit(f"-> Thất bại Docling OCR (mã thoát {exit_code}). {tail}".strip(), "error")
+                return False
+
             try:
-                from docling.utils.model_downloader import download_models
-                download_models(output_dir=artifacts_dir, progress=False)
-                self.log.emit("  Tải mô hình thành công. Từ lần sau sẽ không cần tải lại.", "success")
-            except Exception as dl_err:
-                self.log.emit(f"Lỗi: Không tải được mô hình Docling: {dl_err}", "error")
+                markdown_output = raw_md.read_text(encoding="utf-8")
+            except OSError as e:
+                self.log.emit(f"-> Thất bại Docling OCR: không đọc được kết quả ({e})", "error")
                 return False
 
-        pipeline_options = PdfPipelineOptions(
-            do_ocr=True,
-            do_table_structure=True,
-            artifacts_path=str(artifacts_dir)
-        )
-        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
-
-        # Use the Tesseract CLI engine: the tesserocr binding needs manual compilation.
-        # Without an explicit path, Docling defaults to lang ['fra','deu','spa','eng'].
-        tesseract_ocr = TesseractCliOcrOptions(
-            lang=["vie", "eng"],
-            tesseract_cmd=find_tesseract_path(),
-            path=str(tessdata_dir),
-            mode=OcrMode.FULL_PAGE,
-            force_full_page_ocr=True
-        )
-        pipeline_options.ocr_options = tesseract_ocr
-
-        converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-            }
-        )
-
-        try:
-            self.log.emit("  Đang xử lý tài liệu với Docling...", "info")
-            result = converter.convert(str(file_path))
-
-            # Keep the output a single self-contained .md: no image files, no placeholders
-            markdown_output = result.document.export_to_markdown(image_placeholder="")
-            markdown_output = "\n".join(
-                line for line in markdown_output.splitlines()
-                if line.strip() not in ("<!-- image -->", "![image]()", "![Image]()")
-            ).strip()
-
-            if len(markdown_output) < 20:
-                self.log.emit(
-                    "Lỗi: Docling không nhận được nội dung văn bản (kết quả rỗng). "
-                    "Hãy thử chế độ 'OCR Ngoại tuyến' hoặc 'OCR Trí tuệ nhân tạo'.", "error"
-                )
-                return False
-
-            base_name = file_path.stem
-            out_path = Path(output_dir) / f"{base_name}.md"
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(self._redact(markdown_output))
-
-            # Docling may drop an assets folder next to the output; we inlined nothing
-            assets_dir = Path(output_dir) / f"{base_name}_images"
-            if assets_dir.is_dir():
-                shutil.rmtree(assets_dir, ignore_errors=True)
-
-            self.log.emit(f"  Xuất file: {out_path.name}", "success")
-            return True
-
-        except Exception as e:
-            self.log.emit(f"-> Thất bại Docling OCR: {str(e)}", "error")
+        if len(markdown_output) < 20:
+            self.log.emit(
+                "Lỗi: Docling không nhận được nội dung văn bản (kết quả rỗng). "
+                "Hãy thử chế độ 'OCR Ngoại tuyến' hoặc 'OCR Trí tuệ nhân tạo'.", "error"
+            )
             return False
+
+        out_path = Path(output_dir) / f"{file_path.stem}.md"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(self._redact(markdown_output))
+
+        self.log.emit(f"  Xuất file: {out_path.name}", "success")
+        return True
+
+    def _run_docling_runner(self, cmd):
+        """Chạy docling_runner.py, chuyển các dòng `LOG|mức|nội dung` thành log của ứng dụng.
+
+        Trả về (mã_thoát, vài_dòng_cuối_không_theo_giao_thức) — phần sau để báo lỗi
+        khi runner chết đột ngột (vd. thiếu RAM, DLL torch lỗi) mà chưa kịp tự báo.
+        """
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding="utf-8", errors="replace", env=_docling_subprocess_env(),
+                startupinfo=_get_startupinfo(),
+            )
+        except OSError as e:
+            self.log.emit(f"Lỗi: Không chạy được Python Docling: {e}", "error")
+            return -1, ""
+
+        tail = []
+        for line in proc.stdout:
+            line = line.rstrip()
+            parts = line.split("|", 2)
+            if len(parts) == 3 and parts[0] == "LOG":
+                self.log.emit(parts[2], parts[1])
+            elif line:
+                tail = (tail + [line])[-5:]
+        return proc.wait(), " | ".join(tail)
 
     def convert_pdf_standard(self, file_path, output_dir):
         """Standard PDF text extraction using opendataloader-pdf."""
@@ -1719,11 +1818,12 @@ class MainWindow(QMainWindow):
         self.btnAutoInstallDocling.setObjectName("installDoclingBtn")
         docling_banner_layout.addWidget(self.btnAutoInstallDocling, stretch=1)
 
+        self._docling_checked = []
         if IS_FROZEN:
-            # Bản đóng gói di động không có môi trường Python/pip thật, và không
-            # bundle sẵn Docling+torch (~2GB) — không thể tự cài lẫn dùng được.
+            # Bản đóng gói di động không có môi trường Python/pip thật và không bundle
+            # Docling+torch (~2GB): nó dùng một Python bên ngoài đã `pip install docling`.
             self.doclingBannerLabel.setText(
-                "⚠️ Chế độ Docling không khả dụng trong bản đóng gói di động (cần môi trường Python riêng ~2GB)."
+                "⚠️ Chưa tìm thấy Python có cài Docling (bản đóng gói dùng Python ngoài, ~2GB)."
             )
             self.btnAutoInstallDocling.setText("Xem hướng dẫn")
             self.btnAutoInstallDocling.clicked.connect(self.show_docling_unavailable_guide)
@@ -2542,10 +2642,10 @@ class MainWindow(QMainWindow):
             self.geminiKeyLabel.hide()
             self.geminiKeyEdit.hide()
             self.tessWarningBanner.hide()
-            if is_docling_available():
-                self.doclingWarningBanner.hide()
-            else:
-                self.doclingWarningBanner.show()
+            self.doclingWarningBanner.hide()
+            self.docling_probe_worker = DoclingProbeWorker()
+            self.docling_probe_worker.done.connect(self.docling_probe_finished)
+            self.docling_probe_worker.start()
         else:
             self.geminiKeyLabel.hide()
             self.geminiKeyEdit.hide()
@@ -2616,15 +2716,24 @@ class MainWindow(QMainWindow):
             self.tessBannerLabel.setText("⚠️ Cài đặt Tesseract tự động thất bại.")
             QMessageBox.critical(self, "Lỗi cài đặt", "Không thể cài đặt Tesseract OCR tự động qua winget.")
 
+    def docling_probe_finished(self, python_exe, checked):
+        self._docling_checked = checked
+        # Người dùng có thể đã đổi sang chế độ khác trong lúc đang dò
+        if python_exe is None and self.ocrCombo.currentIndex() == 3:
+            self.doclingWarningBanner.show()
+        else:
+            self.doclingWarningBanner.hide()
+
     def show_docling_unavailable_guide(self):
         QMessageBox.information(
-            self, "Docling không khả dụng trong bản đóng gói",
+            self, "Cần Python có cài Docling",
             "Chế độ Docling (OCR ngoại tuyến + TableFormer) cần thư viện Docling và PyTorch "
-            "(~2GB), không được đóng gói sẵn vào bản portable này để giữ dung lượng nhỏ gọn.\n\n"
-            "Để dùng chế độ này, vui lòng chạy ứng dụng trực tiếp từ mã nguồn Python "
-            "(xem README.md) rồi cài đặt: pip install docling\n\n"
+            "(~2GB), không được đóng gói sẵn vào bản portable này để giữ dung lượng nhỏ gọn. "
+            "Bản này sẽ tự dùng một Python bên ngoài đã cài Docling.\n\n"
+            + docling_missing_hint(self._docling_checked) + "\n\n"
+            "Sau khi cài xong, chọn lại chế độ Docling (không cần khởi động lại ứng dụng).\n\n"
             "3 chế độ còn lại (Standard, Tesseract OCR, OCR Trí tuệ nhân tạo) hoạt động "
-            "đầy đủ trong bản đóng gói này."
+            "đầy đủ không cần Python ngoài."
         )
 
     def auto_install_docling(self):
